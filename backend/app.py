@@ -20,6 +20,7 @@ from .pipeline import run_demo, run_separation, run_transcription, run_cpu_analy
 from .editing import ScoreEdit, load_document, persist, validate_edit, notation_metadata
 from .separator import engine_status
 from . import lyrics
+from . import score_import
 
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-worker")
 EVENTS: dict[str, threading.Event] = {}
@@ -43,9 +44,11 @@ class UploadSizeLimit:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("path") != "/api/jobs" or scope.get("method") != "POST":
+        path = scope.get("path", "")
+        score_upload = path in {"/api/score-import", "/api/score-import/inspect"} or bool(re.fullmatch(r"/api/jobs/[a-f0-9]{32}/scores/[a-z]+/import-preview", path))
+        if scope["type"] != "http" or scope.get("method") != "POST" or (path != "/api/jobs" and not score_upload):
             return await self.app(scope, receive, send)
-        limit = MAX_UPLOAD_BYTES + 1024 * 1024  # multipart overhead
+        limit = (score_import.UPLOAD_LIMIT if score_upload else MAX_UPLOAD_BYTES) + 1024 * 1024
         headers = dict(scope.get("headers", []))
         try:
             too_large = int(headers.get(b"content-length", b"0")) > limit
@@ -166,6 +169,66 @@ def create_demo():
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     return valid_job(job_id)
+
+
+async def read_score_upload(file):
+    try:
+        data = await file.read(score_import.UPLOAD_LIMIT + 1)
+        if len(data) > score_import.UPLOAD_LIMIT:
+            raise HTTPException(413, "악보 파일은 2MB 이하로 선택해주세요.")
+        return data
+    finally:
+        await file.close()
+
+
+def import_error(error):
+    message = str(error) if isinstance(error, ValueError) else "MusicXML의 음정·시간·악기 정보를 읽을 수 없어요. 파일을 확인해주세요."
+    # Validation details should not turn an uploaded document into an error dump.
+    if isinstance(error, ValueError) and hasattr(error, "errors"):
+        message = "이 악보의 길이·튜닝·음표·가사/메모가 현재 편집기 범위를 벗어나요."
+    return HTTPException(422, message[:500])
+
+
+@app.post("/api/score-import/inspect")
+async def inspect_score_file(file: UploadFile = File(...)):
+    data = await read_score_upload(file)
+    try:
+        return await asyncio.to_thread(score_import.inspect, data, file.filename or "")
+    except (ValueError, KeyError, TypeError, OverflowError) as error:
+        raise import_error(error) from None
+
+
+def create_imported_project(data, filename, part_id, inst):
+    if inst not in INSTRUMENTS:
+        raise HTTPException(422, "가져올 악기를 선택해주세요.")
+    try:
+        doc, source, warnings = score_import.import_document(data, filename, part_id, inst)
+    except (ValueError, KeyError, TypeError, OverflowError) as error:
+        raise import_error(error) from None
+    # Validate before creating a job. Invalid XML never creates partial projects.
+    with TASK_LOCK, store.LOCK:
+        job = store.create(doc["title"], "musicxml")
+        folder = store.directory(job["id"])
+        try:
+            persist(doc, folder, automatic=True)
+            (folder / f"{inst}.source.musicxml").write_bytes(source)
+        except Exception:
+            store.update(job["id"], status="error", error="가져온 악보를 저장하지 못했어요.")
+            raise
+        duration = doc["ticks"] / 4 * 60 / doc["bpm"]
+        stem_update(job["id"], inst, score_status="ready", score_url=store.asset_url(job["id"], f"{inst}.musicxml"),
+                    midi_url=store.asset_url(job["id"], f"{inst}.mid"), score_bpm=doc["bpm"], score_revision=doc["revision"],
+                    score_title=doc["title"], score_layout=doc["layout"], note_count=len(doc["notes"]), score_edited=True,
+                    score_source_url=store.asset_url(job["id"], f"{inst}.source.musicxml"),
+                    score_warning=" · ".join(warnings), **notation_metadata(doc))
+        return store.update(job["id"], status="completed", stage="done", progress=100, duration=duration, bpm=doc["bpm"],
+                            message="악보를 가져왔어요. 직접 수정에서 연주·스타일을 편집하세요.")
+
+
+@app.post("/api/score-import", status_code=201)
+async def import_score_project(file: UploadFile = File(...), part_id: str = Form(..., max_length=80), instrument: str = Form(...)):
+    data = await read_score_upload(file)
+    return await asyncio.to_thread(create_imported_project, data, file.filename or "", part_id, instrument)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -399,6 +462,23 @@ def preview_score_document(job_id: str, inst: str, body: ScoreEdit):
         return {"musicxml": (folder / f"{inst}.musicxml").read_text()}
 
 
+@app.post("/api/jobs/{job_id}/scores/{inst}/import-preview")
+async def preview_imported_score(job_id: str, inst: str, file: UploadFile = File(...), part_id: str = Form(..., max_length=80), base_revision: str = Form(..., max_length=80)):
+    data = await read_score_upload(file)
+    with TASK_LOCK, store.LOCK:
+        if job_id in EVENTS:
+            raise HTTPException(409, "현재 작업이 끝나면 악보를 가져와주세요.")
+        job, _ = score_stem(job_id, inst)
+        current = load_document(store.directory(job_id), inst, job["duration"])
+        if current["revision"] != base_revision:
+            raise HTTPException(409, "다른 화면에서 악보가 변경됐어요. 최신 악보를 다시 열어주세요.")
+    try:
+        doc, _, warnings = await asyncio.to_thread(score_import.import_document, data, file.filename or "", part_id, inst, current=current)
+        return {"document": doc, "warnings": warnings}
+    except (ValueError, KeyError, TypeError, OverflowError) as error:
+        raise import_error(error) from None
+
+
 class CopyLyricsRequest(BaseModel):
     model_config = {"extra": "forbid"}
     base_revision: str = Field(max_length=80)
@@ -429,7 +509,7 @@ def copy_score_lyrics(job_id: str, inst: str, body: CopyLyricsRequest):
             edit = ScoreEdit(base_revision=target["revision"], title=target["title"], bpm=target["bpm"],
                              notes=target["notes"], annotations=target["annotations"], layout=target["layout"],
                              tab=target.get("tab"), lyrics=items)
-            documents.append(validate_edit(edit, target))
+            documents.append({**validate_edit(edit, target), "notes": target["notes"]})
         # Generate every target first: a failed export never overwrites any target.
         with tempfile.TemporaryDirectory(prefix="lyrics-", dir=folder) as temporary:
             staging = Path(temporary)
@@ -444,7 +524,7 @@ def copy_score_lyrics(job_id: str, inst: str, body: CopyLyricsRequest):
 
 
 def allowed_files() -> set[str]:
-    return {"original.wav", "residual.wav", *[f"{inst}.{extension}" for inst in INSTRUMENTS for extension in ("wav", "mid", "musicxml")]}
+    return {"original.wav", "residual.wav", *[f"{inst}.{extension}" for inst in INSTRUMENTS for extension in ("wav", "mid", "musicxml", "source.musicxml")]}
 
 
 @app.get("/api/jobs/{job_id}/files/{name}")
@@ -456,7 +536,7 @@ def download(job_id: str, name: str, download: bool = False):
     if not path.is_file():
         raise HTTPException(404, "파일이 아직 준비되지 않았어요.")
     mime = {".wav": "audio/wav", ".mid": "audio/midi", ".musicxml": "application/vnd.recordare.musicxml+xml"}[path.suffix]
-    return FileResponse(path, media_type=mime, filename=name if download else None)
+    return FileResponse(path, media_type=mime, filename=name if download or name.endswith(".source.musicxml") else None)
 
 
 @app.get("/api/jobs/{job_id}/archive")
@@ -472,7 +552,8 @@ def archive(job_id: str):
             path = store.directory(job_id) / name
             if path.is_file():
                 bundle.write(path, name)
-        bundle.writestr("README.txt", "Akbo Maker\n" + ("Original synthesized demo. Not SAM Audio inference.\n" if job["demo"] else "SAM Audio sequential source separation.\n") + "Scores are automatic drafts, quantized to a 1/16-note grid in 4/4. Check pitches and rhythm.\nDrum scores are experimental spectral-onset estimates.\n")
+        source_note = "Imported MusicXML score. No audio separation or transcription.\n" if job["source_type"] == "musicxml" else "Original audio only. SAM inference not run.\n" if job.get("analysis_only") else "Original synthesized demo. Not SAM Audio inference.\n" if job["demo"] else "SAM Audio sequential source separation.\n"
+        bundle.writestr("README.txt", "Akbo Maker\n" + source_note + "Scores use a 1/16-note grid in 4/4. Check pitches and rhythm.\nAutomatic drum transcription uses experimental spectral-onset estimates.\n")
     temporary.replace(target)
     return FileResponse(target, media_type="application/zip", filename=f"akbo-{job_id[:8]}.zip")
 

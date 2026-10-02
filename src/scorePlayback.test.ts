@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { audioTimeAtTick, playbackNotes, tickSeconds } from './scorePlayback';
+import { audioTickAtTime, audioTimeAtTick, playbackNotes, tickSeconds } from './scorePlayback';
 import { parseLrc, updateNote } from './scoreEditing';
 import type { ScoreDocument } from './types';
 
@@ -19,6 +19,12 @@ it('maps LRC absolute time into the score using its first-beat offset', () => {
   const result = parseLrc('[00:01.00]intro\n[00:02.00]enter\n[00:03.00]sing', 120, 32, 2);
   expect(result.lyrics.map(l => l.start)).toEqual([0, 8]);
   expect(result.skipped).toBe(1);
+});
+it('maps media time back into the score without following edited BPM', () => {
+  expect(audioTickAtTime(doc, 4.4)).toBeCloseTo(16);
+  expect(audioTickAtTime({ ...doc, bpm: 200 }, 4.4)).toBeCloseTo(16);
+  expect(audioTickAtTime(doc, 1)).toBeNull();
+  expect(audioTickAtTime(doc, 10)).toBeNull();
 });
 it('extends a note into continuation cells and rejects collisions', () => {
   expect(updateNote(doc, 'held', { length: 15 }).notes[0].length).toBe(15);

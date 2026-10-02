@@ -53,6 +53,7 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
         display.EngravingRules.MinimumDistanceBetweenSystems = spacious ? 10 : 5;
         display.EngravingRules.RenderXMeasuresPerLineAkaSystem = layout?.measures_per_line || 4;
         display.EngravingRules.NewSystemAtXMLNewSystemAttribute = true;
+        display.EngravingRules.NewPageAtXMLNewPageAttribute = true;
         display.EngravingRules.UseXMLMeasureNumbers = true;
         display.EngravingRules.TabFingeringsRendered = false;
         display.EngravingRules.TabBeamsRendered = false;

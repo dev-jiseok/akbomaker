@@ -3,9 +3,9 @@ import { Play, Square } from 'lucide-react';
 import { playbackNotes, tickSeconds } from '../scorePlayback';
 import type { ScoreDocument } from '../types';
 
-type Props = { document: ScoreDocument; measure: number; onTick: (tick: number | null) => void; onError: (message: string) => void };
+type Props = { document: ScoreDocument; measure: number; onTick: (tick: number | null) => void; onError: (message: string) => void; stopKey?: number };
 
-export default function ScorePlayback({ document: doc, measure, onTick, onError }: Props) {
+export default function ScorePlayback({ document: doc, measure, onTick, onError, stopKey }: Props) {
   const [to, setTo] = useState(measure);
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
@@ -13,7 +13,7 @@ export default function ScorePlayback({ document: doc, measure, onTick, onError 
   const stop = useRef<() => void>(() => {});
   const generation = useRef(0);
   useEffect(() => { setTo(measure); }, [measure]);
-  useEffect(() => { stop.current(); return () => stop.current(); }, [doc, measure, to, speed, loop]);
+  useEffect(() => { stop.current(); return () => stop.current(); }, [doc, measure, to, speed, loop, stopKey]);
 
   async function play() {
     stop.current();
@@ -40,8 +40,8 @@ export default function ScorePlayback({ document: doc, measure, onTick, onError 
       function voice(note: typeof notes[number], when: number) {
         const drum = doc.instrument === 'drums';
         const gain = ctx.createGain();
-        const length = drum ? Math.min(note.duration, note.pitch === 46 || note.pitch === 49 ? .3 : .13) : note.duration;
-        const amplitude = note.velocity / 127 * (drum ? .22 : .16);
+        const length = note.muted ? Math.min(note.duration, .08) : note.articulation === 'staccato' ? note.duration * .45 : drum ? Math.min(note.duration, note.pitch === 46 || note.pitch === 49 ? .3 : .13) : note.duration;
+        const amplitude = Math.min(1, note.velocity / 127 * (note.articulation === 'accent' ? 1.3 : 1)) * (drum ? .22 : .16);
         gain.gain.setValueAtTime(.0001, when); gain.gain.exponentialRampToValueAtTime(Math.max(.0002, amplitude), when + Math.min(.005, length / 4));
         gain.gain.exponentialRampToValueAtTime(.0001, when + Math.max(.006, length)); gain.connect(master);
         let source: OscillatorNode | AudioBufferSourceNode;
@@ -55,6 +55,7 @@ export default function ScorePlayback({ document: doc, measure, onTick, onError 
           tone.type = drum || doc.instrument === 'bass' ? 'sine' : 'triangle';
           tone.frequency.setValueAtTime(drum ? (note.pitch === 36 ? 110 : 130 + (note.pitch - 45) * 18) : 440 * 2 ** ((note.pitch - 69) / 12), when);
           if (drum) tone.frequency.exponentialRampToValueAtTime(note.pitch === 36 ? 42 : 90, when + length);
+          else if (note.bend) tone.frequency.exponentialRampToValueAtTime(440 * 2 ** ((note.pitch + note.bend - 69) / 12), when + length * .8);
           source.connect(gain);
         }
         source.onended = () => { source.disconnect(); filter?.disconnect(); gain.disconnect(); };

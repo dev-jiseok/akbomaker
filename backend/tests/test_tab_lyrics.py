@@ -14,6 +14,7 @@ def body(doc):
 
 def test_bass_two_staves_tuning_concert_midi_and_lyrics_on_rest(tmp_path):
     doc = create_document([(0, .5, 28, .8)], "bass", "TAB", 120, 2)
+    doc["tab"]["order"] = "staff-first"
     doc["lyrics"] = [{"id": "entry", "start": 7, "text": "보컬 진입"}]
     persist(doc, tmp_path)
     tree = ET.parse(tmp_path / "bass.musicxml")
@@ -109,3 +110,60 @@ def test_beams_precede_lyric_in_musicxml_schema_order(tmp_path):
     note = ET.parse(tmp_path / "drums.musicxml").find(".//note[lyric]")
     tags = [c.tag for c in note]
     assert "beam" in tags and tags.index("beam") < tags.index("lyric")
+
+
+def test_new_tab_first_capo_concert_pitch_and_manual_breaks(tmp_path):
+    doc = create_document([(0, .5, 30, .8)], "bass", "카포", 120, 8)
+    doc["tab"]["capo"] = 2
+    doc["notes"] = assign_positions([{**doc["notes"][0], "string": None, "fret": None}], doc["tab"]["tuning"], 2)
+    doc["lyrics"] = [{"id": "l", "start": 0, "text": "같이"}]
+    doc["layout"].update(system_breaks=[2], page_breaks=[3])
+    doc["notes"][0].update(articulation="accent", bend=2, muted=True)
+    persist(doc, tmp_path)
+    tree = ET.parse(tmp_path / "bass.musicxml")
+    assert tree.findtext(".//clef[@number='1']/sign") == "TAB"
+    assert tree.findtext(".//clef[@number='2']/sign") == "F"
+    assert [c.get("number") for c in tree.findall(".//attributes/clef")] == ["1", "2"]
+    assert tree.findtext(".//transpose[@number='2']/octave-change") == "-1"
+    assert tree.findtext(".//staff-details[@number='1']/capo") == "2"
+    tab_note = tree.find(".//note[staff='1'][notations]")
+    assert tab_note.findtext("notations/technical/fret") == "0"
+    assert tab_note.findtext("notations/technical/bend/bend-alter") == "2"
+    assert tab_note.find("notations/articulations/accent") is not None
+    assert tab_note.findtext("notehead") == "x"
+    assert tree.findtext(".//note[lyric]/staff") == "2"
+    assert tree.find("part/measure[@number='2']/print").get("new-system") == "yes"
+    assert tree.find("part/measure[@number='3']/print").get("new-page") == "yes"
+    assert [n.note for n in mido.MidiFile(tmp_path / "bass.mid").tracks[0] if n.type == "note_on"] == [30]
+
+
+@pytest.mark.parametrize("change", [{"capo": 13}, {"order": "wrong"}])
+def test_bad_tab_preferences_rejected(change):
+    doc = create_document([], "bass", "test", 120, 2)
+    edit = body(doc)
+    edit["tab"].update(change)
+    with pytest.raises(ValueError):
+        validate_edit(ScoreEdit(**edit), doc)
+
+
+def test_capo_pitch_validation_and_unsupported_breaks():
+    doc = create_document([], "bass", "test", 120, 2)
+    edit = body(doc)
+    edit["tab"]["capo"] = 2
+    edit["notes"] = [{"id": "n", "start": 0, "length": 4, "pitch": 28, "velocity": 80, "string": 4, "fret": 0}]
+    with pytest.raises(ValueError, match="일치"):
+        validate_edit(ScoreEdit(**edit), doc)
+    edit["notes"][0]["pitch"] = 30
+    assert validate_edit(ScoreEdit(**edit), doc)["notes"][0]["fret"] == 0
+    edit["layout"]["page_breaks"] = [1]
+    with pytest.raises(ValueError, match="시작 마디"):
+        validate_edit(ScoreEdit(**edit), doc)
+
+
+def test_older_client_preserves_saved_order_and_capo_when_omitted():
+    doc = create_document([], "bass", "test", 120, 2)
+    doc["tab"].update(order="staff-first", capo=2)
+    edit = body(doc)
+    edit["tab"] = {"mode": "both", "tuning": doc["tab"]["tuning"]}
+    updated = validate_edit(ScoreEdit(**edit), doc)
+    assert updated["tab"]["order"] == "staff-first" and updated["tab"]["capo"] == 2

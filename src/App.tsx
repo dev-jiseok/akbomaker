@@ -5,6 +5,7 @@ import { formatTime, instruments, isProcessing, isYoutubeUrl, validateFile, type
 import { StudioArtwork } from './components/Artwork';
 import { instrumentIcons } from './components/Mixer';
 import Workspace from './components/Workspace';
+import ScoreImport from './components/ScoreImport';
 
 type View = 'home' | 'projects' | 'guide';
 const names = ['보컬', '베이스', '드럼', '신디사이저', '기타', '피아노'];
@@ -198,6 +199,7 @@ export default function App() {
             <div className="upload-footnote"><ShieldCheck size={13} /><span>직접 제작했거나 사용할 권한이 있는 음악을 가져와주세요.</span></div>
           </section><aside className="workflow-card"><span className="eyebrow">FROM SOUND TO SHEET</span><h2>음악이 악보가 되는 순간</h2><p className="workflow-intro">복잡한 과정은 덜고,<br />음악에 더 가까이.</p><div className="workflow-steps"><div><span className="workflow-icon"><UploadCloud size={20} /></span><div><small>01 · BRING YOUR MUSIC</small><h3>음악 가져오기</h3><p>파일이나 YouTube 링크 하나면 충분해요.</p></div></div><div><span className="workflow-icon"><AudioLines size={20} /></span><div><small>02 · FIND EACH SOUND</small><h3>악기별로 나누기</h3><p>여섯 악기를 분리하고 따로 들어보세요.</p></div></div><div><span className="workflow-icon"><FileMusic size={20} /></span><div><small>03 · MAKE IT YOURS</small><h3>나에게 맞는 악보 만들기</h3><p>악보를 읽기 편하게 맞추고 저장하세요.</p></div></div></div><div className="workflow-footer"><span>♩</span><p>완벽한 악보보다,<br /><strong>내가 읽기 편한 악보.</strong></p></div></aside></div>
           <section className="recent-section"><div className="recent-heading"><h2>최근 작업한 음악 <span>{projects.length ? String(projects.length).padStart(2, '0') : '00'}</span></h2><button className="text-button" onClick={() => navigate('projects')}>모든 프로젝트 <ArrowUpRight size={14} /></button></div>{recent.length ? <div className="project-grid">{recent.map(project => <ProjectCard key={project.id} project={project} onOpen={openProject} disabled={loading} />)}</div> : <div className="empty-recent"><span className="empty-recent-icon"><Music2 size={23} strokeWidth={1.4} /></span><div><strong>아직은 빈 작업실이에요</strong><p>첫 음악을 가져오거나, 샘플로 가볍게 시작해보세요.</p></div><button className="text-button" disabled={loading} onClick={() => void demo()}>샘플 열어보기 <ArrowRight size={15} /></button></div>}</section>
+          <ScoreImport disabled={loading || !health} onImported={acceptJob} />
           <footer className="page-footer"><span>AKBO MAKER <i /> A LITTLE MORE YOU.</span><span>음악을 듣는 또 하나의 방법.</span></footer>
         </>}
       </main>

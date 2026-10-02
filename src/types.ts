@@ -8,6 +8,7 @@ export type Stem = {
   waveform: number[];
   audio_url?: string;
   score_url?: string;
+  score_source_url?: string;
   midi_url?: string;
   score_error?: string;
   score_warning?: string;
@@ -22,9 +23,9 @@ export type Stem = {
   quiet?: boolean;
 };
 export type ScorePreset = 'practice' | 'standard' | 'large';
-export type ScoreLayout = { preset: ScorePreset; measures_per_line: 2 | 4; show_numbers: boolean; beam_group?: 'beat' | 'half' };
-export type ScoreNote = { id: string; start: number; length: number; pitch: number; velocity: number; string?: number | null; fret?: number | null };
-export type TabSettings = { mode: 'staff' | 'both' | 'tab'; tuning: number[] };
+export type ScoreLayout = { preset: ScorePreset; measures_per_line: 2 | 4; show_numbers: boolean; beam_group?: 'beat' | 'half'; system_breaks?: number[]; page_breaks?: number[] };
+export type ScoreNote = { id: string; start: number; length: number; pitch: number; velocity: number; string?: number | null; fret?: number | null; articulation?: 'none' | 'accent' | 'staccato' | 'tenuto'; muted?: boolean; bend?: number };
+export type TabSettings = { mode: 'staff' | 'both' | 'tab'; tuning: number[]; order?: 'tab-first' | 'staff-first'; capo?: number };
 export type ScoreLyric = { id: string; start: number; text: string };
 export type ScoreAnnotation = { measure: number; section: string; cue: string };
 export type ScoreDocument = {

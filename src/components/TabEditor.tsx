@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { pitchLabel, toggleTabNote } from '../scoreEditing';
+import { pitchLabel, setCapo, toggleTabNote } from '../scoreEditing';
 import type { ScoreDocument } from '../types';
 
 type Props = { document: ScoreDocument; measure: number; length: number; disabled: boolean; onChange: (doc: ScoreDocument) => void; onSelect: (id: string) => void; onError: (error: string) => void };
@@ -13,11 +13,11 @@ export default function TabEditor({ document: doc, measure, length, disabled, on
   ] as const : [['6현 · E A D G B E', [64, 59, 55, 50, 45, 40]], ['6현 · Drop D', [64, 59, 55, 50, 45, 38]], ['7현 · B E A D G B E', [64, 59, 55, 50, 45, 40, 35]]] as const;
   const unassigned = doc.notes.filter(n => n.string == null).length;
   return <fieldset className="tab-editor grid-fieldset" disabled={disabled}>
-    <div className="tab-settings"><label>악보 표기<select value={doc.tab.mode} onChange={e => onChange({ ...doc, tab: { ...doc.tab!, mode: e.target.value as 'staff' | 'both' | 'tab' } })}><option value="both">오선 + TAB</option><option value="tab">TAB만</option><option value="staff">오선만</option></select></label><label>튜닝<select value={presets.findIndex(([, tuning]) => tuning.join() === doc.tab!.tuning.join())} onChange={e => {
+    <div className="tab-settings"><label>악보 표기<select value={doc.tab.mode} onChange={e => onChange({ ...doc, tab: { ...doc.tab!, mode: e.target.value as 'staff' | 'both' | 'tab' } })}><option value="both">TAB + 오선</option><option value="tab">TAB만</option><option value="staff">오선만</option></select></label>{doc.tab.mode === 'both' && <label>위쪽 보표<select value={doc.tab.order || 'staff-first'} onChange={e => onChange({ ...doc, tab: { ...doc.tab!, order: e.target.value as 'tab-first' | 'staff-first' } })}><option value="tab-first">TAB 먼저 · 기본</option><option value="staff-first">오선 먼저</option></select></label>}<label>카포<input type="number" min={0} max={12} value={doc.tab.capo || 0} onChange={e => { try { onChange(setCapo(doc, Number(e.target.value))); } catch (error) { onError((error as Error).message); } }} /></label><label>튜닝<select value={presets.findIndex(([, tuning]) => tuning.join() === doc.tab!.tuning.join())} onChange={e => {
       const tuning = [...presets[Number(e.target.value)][1]];
       onChange({ ...doc, tab: { ...doc.tab!, tuning }, notes: doc.notes.map(n => ({ ...n, string: null, fret: null })) });
     }}>{presets.map(([name], i) => <option value={i} key={name}>{name}</option>)}{!presets.some(([, t]) => t.join() === doc.tab!.tuning.join()) && <option value={-1}>사용자 튜닝</option>}</select></label><label>입력 프렛<input type="number" min={0} max={24} value={fret} onChange={e => setFret(Math.min(24, Math.max(0, Math.round(Number(e.target.value)))))} /></label></div>
-    <p className="editor-help">빈칸을 누르면 선택한 프렛의 음표가 들어갑니다. 숫자를 누르면 선택하고, 더블클릭하면 삭제합니다. 1번 줄은 가장 높은 줄입니다. <span>0 = 개방현</span></p>
+    <p className="editor-help">빈칸으로 추가 · 숫자로 선택 · 더블클릭으로 삭제. 1번 줄은 가장 높은 줄입니다. 카포 변경은 음정을 유지하고 운지만 다시 제안합니다. <span>프렛 0 = 카포 위치의 개방현</span></p>
     {unassigned > 0 && <p className="tab-warning" role="status">운지 미배정 {unassigned}개 · 저장할 때 가능한 음은 자동 배정합니다. 음역·동시 발음 수를 벗어난 음은 오선에 남고 TAB에서는 빠집니다.</p>}
     <div className="note-grid-scroll"><div className="note-grid tab-grid" role="group" aria-label={`${measure}마디 TAB 입력`}><span className="lane-label grid-corner">줄 / 개방음</span>{Array.from({ length: 16 }, (_, tick) => <span className={`grid-tick ${tick % 4 === 0 ? 'beat' : ''}`} key={tick}>{tick % 4 === 0 ? tick / 4 + 1 : ['e', '&', 'a'][tick % 4 - 1]}</span>)}
       {doc.tab.tuning.map((pitch, index) => <div className="grid-lane" key={index}><span className="lane-label">{index + 1} · {pitchLabel(pitch)}</span>{Array.from({ length: 16 }, (_, tick) => {

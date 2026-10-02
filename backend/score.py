@@ -94,7 +94,11 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
     annotations = {item["measure"]: item for item in (annotations or [])}
     lyric_map = {item["start"]: item["text"] for item in (lyrics or [])}
     tab_mode = tab["mode"] if tab else "staff"
+    tab_first = bool(tab and tab.get("order", "staff-first") == "tab-first")
+    tab_staff = 1 if tab_mode == "tab" or tab_first else 2
+    standard_staff = 2 if tab_mode == "both" and tab_first else 1
     tab_positions = {(n["start"], n["start"] + n["length"], n["pitch"]): (n.get("string"), n.get("fret")) for n in (positions or [])}
+    note_marks = {(n["start"], n["start"] + n["length"], n["pitch"]): n for n in (positions or [])}
     if len(notes) > 30_000:
         raise ValueError("채보 결과가 너무 복잡해요. 짧은 구간으로 나누어 다시 시도해주세요.")
     root = ET.Element("score-partwise", version="4.0")
@@ -133,8 +137,9 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
     for number in range(measures):
         measure = child(part, "measure", number=str(number + 1))
         lo, hi = number * 16, (number + 1) * 16
-        if number == 0 or number % layout.get("measures_per_line", 4) == 0:
-            printing = child(measure, "print", **({"new-system": "yes"} if number else {}))
+        page_break = number + 1 in layout.get("page_breaks", [])
+        if number == 0 or number % layout.get("measures_per_line", 4) == 0 or number + 1 in layout.get("system_breaks", []) or page_break:
+            printing = child(measure, "print", **({"new-page": "yes"} if page_break else {"new-system": "yes"} if number else {}))
             child(printing, "measure-numbering", "measure" if layout.get("show_numbers", True) else "none")
         annotation = annotations.get(number + 1, {})
         for name, tag, placement in [("section", "rehearsal", "above"), ("cue", "words", "below")]:
@@ -151,14 +156,14 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
             if tab_mode == "both":
                 child(attrs, "staves", 2)
             if tab_mode != "tab":
-                clef = child(attrs, "clef", **({"number": "1"} if tab_mode == "both" else {}))
+                clef = child(attrs, "clef", **({"number": str(standard_staff)} if tab_mode == "both" else {}))
                 child(clef, "sign", "percussion" if inst == "drums" else "F" if inst == "bass" else "G")
                 if inst != "drums":
                     child(clef, "line", 4 if inst == "bass" else 2)
                 else:
                     child(child(attrs, "staff-details"), "staff-lines", 5)
             if tab_mode != "staff":
-                staff = 2 if tab_mode == "both" else 1
+                staff = tab_staff
                 clef = child(attrs, "clef", number=str(staff))
                 child(clef, "sign", "TAB")
                 child(clef, "line", 5 if len(tab["tuning"]) > 4 else 3)
@@ -171,10 +176,21 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                     if alter:
                         child(tuning, "tuning-alter", alter)
                     child(tuning, "tuning-octave", pitch // 12 - 1)
+                if tab.get("capo", 0):
+                    child(details, "capo", tab["capo"])
+            if tab_mode == "both":
+                # Readers (including OSMD) may initialize clefs in element
+                # order. Keep the XML staff sequence consistent with numbers.
+                clefs = attrs.findall("clef")
+                first_clef = min(list(attrs).index(c) for c in clefs)
+                for clef in clefs:
+                    attrs.remove(clef)
+                for offset, clef in enumerate(sorted(clefs, key=lambda c: int(c.get("number", "1")))):
+                    attrs.insert(first_clef + offset, clef)
             if tab and tab_mode != "tab":
                 # Guitar/bass standard notation is written one octave above
                 # concert pitch. String/fret values and exported MIDI stay concert.
-                transpose = child(attrs, "transpose", number="1")
+                transpose = child(attrs, "transpose", number=str(standard_staff))
                 child(transpose, "diatonic", 0)
                 child(transpose, "chromatic", 0)
                 child(transpose, "octave-change", -1)
@@ -183,10 +199,15 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
             child(metronome, "beat-unit", "quarter")
             child(metronome, "per-minute", bpm)
             child(direction, "sound", tempo=str(bpm))
+            if tab and tab.get("capo", 0):
+                capo_direction = child(measure, "direction", placement="above")
+                child(child(capo_direction, "direction-type"), "words", f"Capo {tab['capo']} · frets relative to capo")
+                if tab_mode == "both":
+                    child(capo_direction, "staff", 1)
         in_bar = [n for n in notes if n[0] < hi and n[1] > lo]
         playable = [n for n in in_bar if tab_positions.get(n[:3], (None, None))[0] is not None]
         if tab_mode == "both":
-            voices = [(in_bar, 1, False), (playable, 2, True)]
+            voices = [(playable, tab_staff, True), (in_bar, standard_staff, False)] if tab_first else [(in_bar, standard_staff, False), (playable, tab_staff, True)]
         elif tab_mode == "tab":
             voices = [(playable, 1, True)]
         elif inst == "drums":
@@ -210,6 +231,7 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                         note = write_note(measure, pitch, event, index, inst, position, size, types, pitch_names,
                                           voice_index, staff=staff if tab_mode != "staff" else None,
                                           is_tab=is_tab, tab_position=tab_positions.get(event[:3]) if event else None,
+                                          marks=note_marks.get(event[:3], {}) if event and position == event[0] else {},
                                           octave_shift=12 if tab and not is_tab else 0)
                         if index == 0 and voice_index == lyric_voice and position in lyric_map:
                             lyric = child(note, "lyric", number="1", placement="below")
@@ -227,7 +249,8 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
 
 
 def write_note(measure, pitch, event, index, inst, position, size, types, pitch_names, voice_index,
-               *, staff=None, is_tab=False, tab_position=None, octave_shift=0):
+               *, staff=None, is_tab=False, tab_position=None, octave_shift=0, marks=None):
+    marks = marks or {}
     note = child(measure, "note")
     if index:
         child(note, "chord")
@@ -267,9 +290,11 @@ def write_note(measure, pitch, event, index, inst, position, size, types, pitch_
         child(note, "stem", "down" if voice_index else "up")
     if inst == "drums" and DRUM_NOTATION.get(pitch, (None, None, False))[2]:
         child(note, "notehead", "x")
+    elif marks.get("muted"):
+        child(note, "notehead", "x")
     if staff:
         child(note, "staff", staff)
-    if ties or (inst == "drums" and pitch == 46) or (is_tab and tab_position):
+    if ties or (inst == "drums" and pitch == 46) or (is_tab and tab_position) or marks.get("articulation", "none") != "none" or marks.get("bend"):
         notation = child(note, "notations")
         for tie in ties:
             child(notation, "tied", type=tie)
@@ -279,6 +304,13 @@ def write_note(measure, pitch, event, index, inst, position, size, types, pitch_
             technical = child(notation, "technical")
             child(technical, "string", tab_position[0])
             child(technical, "fret", tab_position[1])
+        if marks.get("bend"):
+            technical = notation.find("technical")
+            if technical is None:
+                technical = child(notation, "technical")
+            child(child(technical, "bend"), "bend-alter", marks["bend"])
+        if marks.get("articulation", "none") != "none":
+            child(child(notation, "articulations"), marks["articulation"])
     return note
 
 

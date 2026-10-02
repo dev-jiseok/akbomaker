@@ -3,10 +3,10 @@ TUNINGS = {"bass": [43, 38, 33, 28], "guitar": [64, 59, 55, 50, 45, 40]}
 
 
 def default_tab(inst):
-    return {"mode": "both", "tuning": TUNINGS[inst].copy()} if inst in TUNINGS else None
+    return {"mode": "both", "order": "tab-first", "capo": 0, "tuning": TUNINGS[inst].copy()} if inst in TUNINGS else None
 
 
-def assign_positions(notes, tuning):
+def assign_positions(notes, tuning, capo=0):
     """Retain manual positions, match simultaneous onsets to distinct free strings.
 
     Small bounded search favours low frets and a stable hand position. This is a
@@ -25,8 +25,8 @@ def assign_positions(notes, tuning):
         fixed = [n for n in group if n.get("string") is not None]
         used.update(n["string"] for n in fixed)
         pending = [n for n in group if n.get("string") is None]
-        candidates = [[(s + 1, n["pitch"] - p) for s, p in enumerate(tuning)
-                       if s + 1 not in used and 0 <= n["pitch"] - p <= 24] for n in pending]
+        candidates = [[(s + 1, n["pitch"] - p - capo) for s, p in enumerate(tuning)
+                       if s + 1 not in used and 0 <= n["pitch"] - p - capo <= 24] for n in pending]
         # Dynamic programming over occupied strings has at most 2^7 states,
         # including for very dense detections. A large unmatched penalty gives
         # maximum-cardinality matching before optimizing fret/hand movement.

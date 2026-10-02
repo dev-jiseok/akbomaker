@@ -12,7 +12,7 @@ import RhythmWorkbench from './RhythmWorkbench';
 type Props = { job: Job; health: Health | null; onJob: (job: Job) => void; onNew: () => void; onError: (message: string) => void; onEditorDirty: (dirty: boolean) => void };
 
 export default function Workspace({ job, health, onJob, onNew, onError, onEditorDirty }: Props) {
-  const [selected, setSelected] = useState<Instrument>('drums');
+  const [selected, setSelected] = useState<Instrument>(() => job.source_type === 'musicxml' ? job.stems.find(s => s.score_url)?.id || 'drums' : 'drums');
   const [scale, setScale] = useState(1.1);
   const [spacious, setSpacious] = useState(true);
   const [numbers, setNumbers] = useState(true);
@@ -25,6 +25,7 @@ export default function Workspace({ job, health, onJob, onNew, onError, onEditor
   const [audioOffset, setAudioOffset] = useState(0);
   const processing = isProcessing(job);
   const stem = job.stems.find(stem => stem.id === selected)!;
+  const sourceLabel = job.source_type === 'musicxml' ? '가져온 MusicXML' : job.source_type === 'youtube' ? 'YouTube' : job.demo ? '직접 합성한 샘플 음악' : '업로드한 음악';
   useEffect(() => { if (stem.score_bpm || job.bpm) setBpm(stem.score_bpm || job.bpm!); }, [selected, stem.score_bpm, job.bpm]);
   useEffect(() => { onEditorDirty(editorDirty || lyricDirty); }, [editorDirty, lyricDirty, onEditorDirty]);
   useEffect(() => () => onEditorDirty(false), [onEditorDirty]);
@@ -75,7 +76,7 @@ export default function Workspace({ job, health, onJob, onNew, onError, onEditor
   }
   return <div className="workspace-view">
     <div className="workspace-top"><button className="text-button" onClick={newProject}><ArrowLeft size={16} /> 작업실 홈</button><button className="secondary small" onClick={newProject}><Plus size={15} /> 새 음악 가져오기</button></div>
-    <div className="project-heading"><div><div className="project-label"><span className="eyebrow">YOUR MUSIC PROJECT</span>{job.demo && <span className="sample-tag">샘플 프로젝트</span>}</div><h1>{job.title}</h1><p>{job.source_type === 'youtube' ? 'YouTube' : job.demo ? '직접 합성한 샘플 음악' : '업로드한 음악'} <i /> {formatTime(job.duration)} <i /> {job.stems.filter(s => s.status === 'ready').length}개의 악기</p></div>{!processing && job.stems.some(s => s.audio_url) && <a className="secondary" href={`/api/jobs/${job.id}/archive`} onClick={e => { if (editorDirty) { e.preventDefault(); onError('편집 내용을 먼저 저장해주세요. ZIP에는 저장된 악보가 포함됩니다.'); } }}><Download size={16} /> 전체 파일 받기</a>}</div>
+    <div className="project-heading"><div><div className="project-label"><span className="eyebrow">YOUR MUSIC PROJECT</span>{job.demo && <span className="sample-tag">샘플 프로젝트</span>}</div><h1>{job.title}</h1><p>{sourceLabel} <i /> {formatTime(job.duration)} <i /> {job.source_type === 'musicxml' ? `${job.stems.filter(s => s.score_status === 'ready').length}개의 악보` : `${job.stems.filter(s => s.status === 'ready').length}개의 악기`}</p></div>{!processing && job.stems.some(s => s.audio_url || s.score_url) && <a className="secondary" href={`/api/jobs/${job.id}/archive`} onClick={e => { if (editorDirty) { e.preventDefault(); onError('편집 내용을 먼저 저장해주세요. ZIP에는 저장된 악보가 포함됩니다.'); } }}><Download size={16} /> 전체 파일 받기</a>}</div>
     {job.demo && <div className="demo-notice"><span>DEMO</span><p>작업 흐름을 체험하는 샘플이에요. 직접 합성한 음원과 악보이며 SAM Audio로 분리한 결과는 아니에요.</p></div>}
     {processing && <div className="progress-card" aria-live="polite"><div className="progress-title"><span><LoaderCircle size={20} className="spin" /><strong>{job.message}</strong></span><button className="text-button" onClick={() => void cancel()} disabled={busy}>중단 <X size={14} /></button></div><div className="progress-track"><div style={{ width: `${job.progress}%` }} /></div><div className="progress-meta"><span>{job.status === 'transcribing' ? '분리된 음원을 바탕으로 채보합니다' : '완료된 악기는 먼저 들어볼 수 있어요'}</span><span>{job.progress}%</span></div></div>}
     {job.error && <div className="inline-alert" role="alert"><AlertCircle size={18} /><div><strong>작업 중 문제가 생겼어요</strong><p>{job.error}</p></div></div>}
@@ -84,7 +85,9 @@ export default function Workspace({ job, health, onJob, onNew, onError, onEditor
     {job.analysis_error && <p className="inline-alert" role="alert">{job.analysis_error}</p>}
     {job.original_url && <RhythmWorkbench job={job} bpm={bpm} offset={audioOffset} disabled={busy || processing} onBpm={setBpm} onOffset={setAudioOffset} onAnalyze={() => void analyzeBeats()} />}
     {job.original_url && <LyricsWorkbench key={`lyrics:${job.id}`} job={job} health={health} editing={editing} onJob={onJob} onError={onError} onDirty={setLyricDirty} />}
-    <Mixer key={job.id} job={job} selected={selected} onSelect={selectPart} onError={onError} />
+    {job.source_type === 'musicxml' && <div className="demo-notice"><span>가져온 악보</span><p>MusicXML에서 가져왔어요. 음원 분리·자동 채보는 실행하지 않았습니다. 음표 합성 재생과 TAB·가사·스타일 편집을 사용할 수 있어요.</p></div>}
+    {stem.score_source_url && <a className="text-button" href={stem.score_source_url + '?download=true'}>처음 가져온 원본 MusicXML 보관 <Download size={14} /></a>}
+    {job.source_type !== 'musicxml' && <Mixer key={job.id} job={job} selected={selected} onSelect={selectPart} onError={onError} />}
     <section className="score-section">
       <div className="score-section-heading"><div><span className="eyebrow">MAKE IT YOURS</span><h2>이제, 나에게 편한 악보로.</h2><p>보고 싶은 악기를 선택하고, 읽기 좋은 크기로 맞춰보세요.</p></div><button className={`secondary small ${settings ? 'active' : ''}`} onClick={() => setSettings(!settings)} aria-expanded={settings}><SlidersHorizontal size={16} /> 악보 설정</button></div>
       <div className="score-layout">

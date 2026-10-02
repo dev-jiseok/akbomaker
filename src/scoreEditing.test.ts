@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScoreDocument } from './types';
-import { contentKey, editBody, parseLrc, pitchLabel, toggleNote, toggleTabNote, updateNote } from './scoreEditing';
+import { bulkEdit, contentKey, editBody, parseLrc, pitchLabel, setCapo, toggleNote, toggleTabNote, updateNote } from './scoreEditing';
 
 const doc: ScoreDocument = { version: 1, instrument: 'piano', title: 'test', bpm: 120, ticks: 32, revision: 'original', edited: false, notes: [], annotations: [], layout: { preset: 'standard', measures_per_line: 4, show_numbers: true } };
 describe('score editing', () => {
@@ -44,6 +44,23 @@ describe('score editing', () => {
     const result = parseLrc('[ti:합주]\n[offset:250]\n[00:00.00][00:01.00]시작\n[00:20.00]끝', 120, 32);
     expect(result.lyrics.map(l => l.start)).toEqual([2, 10]);
     expect(result.skipped).toBe(1);
+  });
+  it('moves a selection atomically, rejects collisions and preserves other notes', () => {
+    const original = toggleNote(toggleNote(doc, 60, 0, 4, 'a'), 60, 4, 4, 'b');
+    const moved = bulkEdit(original, ['a', 'b'], { shift: 4 });
+    expect(moved.notes.map(n => n.start)).toEqual([4, 8]);
+    expect(original.notes.map(n => n.start)).toEqual([0, 4]);
+    expect(() => bulkEdit(original, ['a'], { shift: 1 })).toThrow('겹쳐');
+    expect(() => bulkEdit(original, ['a'], { transpose: -61 })).toThrow('정수');
+    expect(bulkEdit(original, ['a'], { remove: true }).notes.map(n => n.id)).toEqual(['b']);
+  });
+  it('preserves concert pitches on capo changes and enters frets relative to capo', () => {
+    const bass = { ...doc, instrument: 'bass' as const, tab: { mode: 'both' as const, tuning: [43, 38, 33, 28] } };
+    const original = toggleTabNote(bass, 4, 5, 0, 4, 'a');
+    const capo = setCapo(original, 2);
+    expect(capo.notes[0]).toMatchObject({ pitch: 33, string: null, fret: null });
+    expect(toggleTabNote(capo, 4, 0, 4, 4, 'b').notes[1].pitch).toBe(30);
+    expect(() => setCapo(original, 13)).toThrow('0~12');
   });
   it('rejects unaligned, colliding, extended or oversized lyrics', () => {
     expect(() => parseLrc('시간 없음', 120, 32)).toThrow('배치');
