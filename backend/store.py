@@ -56,7 +56,10 @@ def recover() -> None:
     for file in DATA_DIR.glob("*/job.json"):
         try:
             job = json.loads(file.read_text())
-            if job["status"] in {"queued", "running", "transcribing"}:
+            if job["status"] == "analyzing":
+                update(job["id"], status=job.get("analysis_previous_status") or "separated", stage="done", progress=100,
+                       analysis_previous_status=None, analysis_error="서버 재시작으로 분석이 중단됐어요. 기존 음원·악보·가사는 보존됐으며 다시 분석할 수 있습니다.")
+            elif job["status"] in {"queued", "running", "transcribing"}:
                 update(job["id"], status="error", error="서버가 재시작되어 작업이 중단됐어요. 새 작업으로 다시 시도해주세요.")
         except (ValueError, KeyError):
             continue

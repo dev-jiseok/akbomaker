@@ -18,6 +18,7 @@ export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
   const [url, setUrl] = useState('');
+  const [analysisOnly, setAnalysisOnly] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -27,6 +28,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [projects, setProjects] = useState<RecentProject[]>(recentProjects);
   const [pollError, setPollError] = useState(false);
+  const [scoreDirty, setScoreDirty] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const abortUpload = useRef<AbortController | null>(null);
   const uploadBusy = useRef(false);
@@ -101,7 +103,7 @@ export default function App() {
   }, [engineModal]);
 
   function navigate(next: View) {
-    if (uploadBusy.current) return;
+    if (uploadBusy.current || !canLeaveScore()) return;
     setView(next);
     setJob(null);
     setPollError(false);
@@ -109,6 +111,7 @@ export default function App() {
     history.replaceState(null, '', location.pathname);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+  function canLeaveScore() { return !scoreDirty || window.confirm('저장하지 않은 악보·가사 변경사항이 있어요. 이 화면을 나갈까요? 임시 편집본은 이 브라우저에 보관됩니다.'); }
   function chooseFile(value: File | undefined) {
     if (!value) return;
     const error = validateFile(value, health?.limits.max_upload_mb || 200);
@@ -128,6 +131,7 @@ export default function App() {
     abortUpload.current = controller;
     try {
       const data = new FormData();
+      data.append('analysis_only', String(analysisOnly));
       if (source === 'file') data.append('file', file!);
       else data.append('url', url.trim());
       const next = await upload(data, setUploadProgress, controller.signal);
@@ -139,7 +143,7 @@ export default function App() {
     finally { uploadBusy.current = false; setLoading(false); setUploadProgress(null); abortUpload.current = null; }
   }
   async function demo() {
-    if (uploadBusy.current || openBusy.current) return;
+    if (uploadBusy.current || openBusy.current || !canLeaveScore()) return;
     openBusy.current = true;
     setLoading(true);
     try { acceptJob(await request<Job>('/api/demo', { method: 'POST' })); window.scrollTo({ top: 0, behavior: 'smooth' }); }
@@ -147,7 +151,7 @@ export default function App() {
     finally { openBusy.current = false; setLoading(false); }
   }
   async function openProject(id: string) {
-    if (openBusy.current || uploadBusy.current) return;
+    if (openBusy.current || uploadBusy.current || !canLeaveScore()) return;
     openBusy.current = true;
     setLoading(true);
     try { acceptJob(await request<Job>(`/api/jobs/${id}`)); window.scrollTo({ top: 0, behavior: 'smooth' }); }
@@ -175,7 +179,7 @@ export default function App() {
       <header className="topbar"><div><button className="icon-button mobile-menu" aria-label="메뉴 열기" onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><span className="topbar-studio">Workspace</span><ChevronRight size={13} /><span>{heading}</span></div><div><button className={`engine-badge ${engineReady ? 'ready' : ''}`} onClick={() => setEngineModal(true)}><i />{checking && !health ? '연결 확인 중' : engineReady ? 'SAM Audio 연결됨' : health ? '샘플 체험 가능' : '서버 연결 필요'}<ChevronRight size={12} /></button><button className="help-button icon-button" aria-label="이용 안내" onClick={() => navigate('guide')}><CircleHelp size={19} /></button></div></header>
       <main>
         {pollError && <div className="inline-alert" role="status"><Radio size={18} /><span>서버 연결이 잠시 끊겼어요. 자동으로 다시 연결하고 있어요.</span></div>}
-        {job ? <Workspace key={job.id} job={job} onJob={acceptJob} onNew={() => navigate('home')} onError={setToast} /> : view === 'projects' ? <Projects projects={projects} loading={loading} onOpen={openProject} onNew={() => navigate('home')} /> : view === 'guide' ? <Guide onDemo={demo} loading={loading} /> : <>
+        {job ? <Workspace key={job.id} job={job} health={health} onJob={acceptJob} onNew={() => navigate('home')} onError={setToast} onEditorDirty={setScoreDirty} /> : view === 'projects' ? <Projects projects={projects} loading={loading} onOpen={openProject} onNew={() => navigate('home')} /> : view === 'guide' ? <Guide onDemo={demo} loading={loading} /> : <>
           <section className="hero"><div className="hero-copy"><div className="hero-eyebrow"><span /> YOUR MUSIC, YOUR WAY</div><h1>좋아하는 음악을,<br /><span>나만의 악보로.</span><span className="title-star">✳</span></h1><p>음악 속 악기를 하나씩 꺼내고,<br />내가 읽기 편한 악보로 만들어보세요.</p><button className="hero-demo" onClick={() => void demo()} disabled={loading}>{loading && uploadProgress === null ? <LoaderCircle size={15} className="spin" /> : <Headphones size={15} />} 샘플 작업실 둘러보기 <ArrowRight size={15} /></button><div className="hero-footnote">조금 더 자유롭게, 조금 더 나답게.</div></div><StudioArtwork /></section>
           <div className="creation-layout"><section className="card import-card"><div className="panel-heading"><div><span className="eyebrow">LET'S GET STARTED</span><h2>어떤 음악을 가져올까요?</h2></div><span className="step-label">STEP 01</span></div>
             <div className="source-tabs" role="tablist" aria-label="음악 가져오기 방식"><button role="tab" aria-selected={source === 'file'} aria-controls="source-panel" id="file-tab" className={source === 'file' ? 'active' : ''} onClick={() => { setSource('file'); setFormError(''); }} disabled={loading}><UploadCloud size={16} /> 파일 업로드</button><button role="tab" aria-selected={source === 'youtube'} aria-controls="source-panel" id="youtube-tab" className={source === 'youtube' ? 'active' : ''} onClick={() => { setSource('youtube'); setFormError(''); }} disabled={loading}><Youtube size={17} /> YouTube 링크</button></div>
@@ -183,12 +187,13 @@ export default function App() {
               {source === 'file' ? <div className={`dropzone ${dragging ? 'dragging' : ''} ${file ? 'has-file' : ''}`} onDragOver={event => { event.preventDefault(); if (!loading) setDragging(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); if (!loading) { if (event.dataTransfer.files.length > 1) setFormError('음악 파일은 한 번에 하나씩 업로드해주세요.'); else chooseFile(event.dataTransfer.files[0]); } }}>
                 <input ref={fileInput} type="file" className="visually-hidden" aria-label="음악 파일 선택" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.mp4,.mov,.webm,.mkv,.aiff,.aif" disabled={loading} onChange={event => { chooseFile(event.target.files?.[0]); event.target.value = ''; }} />
                 {file ? <div className="selected-file"><span className="upload-symbol"><FileAudio2 size={29} strokeWidth={1.5} /></span><div className="file-info"><h3>{file.name}</h3><p>{(file.size / 1024 / 1024).toFixed(1)} MB · 업로드 준비 완료</p></div><button className="icon-button" aria-label="선택한 파일 지우기" disabled={loading} onClick={() => setFile(null)}><X size={18} /></button>{preview && <audio className="file-preview" src={preview} controls preload="metadata" aria-label="업로드 전 음악 미리듣기" onLoadedMetadata={event => { if (event.currentTarget.duration > (health?.limits.max_audio_seconds || 600)) setFormError(`최대 ${(health?.limits.max_audio_seconds || 600) / 60}분 길이의 음악을 선택해주세요.`); }} />}<button className="text-button" disabled={loading} onClick={() => fileInput.current?.click()}>다른 파일 선택</button></div> : <button className="dropzone-button" disabled={loading} onClick={() => fileInput.current?.click()}><span className="upload-symbol"><UploadCloud size={29} strokeWidth={1.5} /><span className="upload-plus"><Plus size={11} strokeWidth={2.5} /></span></span><h3>음악 파일을 여기에 놓아주세요</h3><p>또는 <span>파일 선택하기</span></p><small>MP3, WAV, FLAC, M4A, MP4 등<br />최대 {health?.limits.max_upload_mb || 200}MB · {(health?.limits.max_audio_seconds || 600) / 60}분 이내</small></button>}
-              </div> : <div className="youtube-panel"><span className="youtube-symbol"><Youtube size={30} strokeWidth={1.4} /></span><h3>좋아하는 음악의 링크를 붙여넣어주세요</h3><p>영상에서 음악을 가져와 악기별로 분리해요.</p><label htmlFor="youtube-url" className="visually-hidden">유튜브 영상 링크</label><div className="url-input"><Link2 size={17} /><input id="youtube-url" type="url" inputMode="url" value={url} disabled={loading} onChange={event => { setUrl(event.target.value); setFormError(''); }} placeholder="https://www.youtube.com/watch?v=…" onKeyDown={event => { if (event.key === 'Enter' && engineReady) void start(); }} />{url && <button className="icon-button" aria-label="링크 지우기" disabled={loading} onClick={() => setUrl('')}><X size={15} /></button>}</div><small>개별 영상 링크를 지원해요 · 재생목록과 라이브 제외</small></div>}
+              </div> : <div className="youtube-panel"><span className="youtube-symbol"><Youtube size={30} strokeWidth={1.4} /></span><h3>좋아하는 음악의 링크를 붙여넣어주세요</h3><p>{analysisOnly ? '영상에서 음악을 가져와 원본을 분석해요.' : '영상에서 음악을 가져와 악기별로 분리해요.'}</p><label htmlFor="youtube-url" className="visually-hidden">유튜브 영상 링크</label><div className="url-input"><Link2 size={17} /><input id="youtube-url" type="url" inputMode="url" value={url} disabled={loading} onChange={event => { setUrl(event.target.value); setFormError(''); }} placeholder="https://www.youtube.com/watch?v=…" onKeyDown={event => { if (event.key === 'Enter' && health && (engineReady || analysisOnly)) void start(); }} />{url && <button className="icon-button" aria-label="링크 지우기" disabled={loading} onClick={() => setUrl('')}><X size={15} /></button>}</div><small>개별 영상 링크를 지원해요 · 재생목록과 라이브 제외</small></div>}
             </div>
             {formError && <div className="form-error" role="alert"><AlertCircle size={15} />{formError}</div>}
             <div className="instrument-label"><span>여섯 가지 소리를 차례로 분리해요</span><span>SAM Audio</span></div><div className="instrument-chips">{instruments.map((inst, i) => { const Icon = instrumentIcons[inst]; return <span key={inst} className={`instrument-chip tone-${inst}`}><Icon size={14} />{names[i]}</span>; })}</div>
             {uploadProgress !== null && <div className="upload-progress" aria-live="polite"><div><span>{uploadProgress === 100 ? '서버에서 업로드를 확인하고 있어요' : `음악을 가져오는 중 · ${uploadProgress}%`}</span><button className="text-button" onClick={() => abortUpload.current?.abort()}>취소</button></div><div className="progress-track"><div style={{ width: `${uploadProgress}%` }} /></div></div>}
-            <button className="primary start-button" disabled={loading || !engineReady || (source === 'file' ? !file : !url.trim())} onClick={() => void start()}>{loading && uploadProgress !== null ? <LoaderCircle className="spin" size={18} /> : <AudioLines size={18} />}악기 분리 시작<ArrowRight size={17} /></button>
+            <label className="analysis-mode check-label"><input type="checkbox" checked={analysisOnly} disabled={loading} onChange={e => setAnalysisOnly(e.target.checked)} /><span>분리 없이 원본만 분석 <small>GPU 없이 BPM·가사 인식·직접 악보 입력</small></span></label>
+            <button className="primary start-button" disabled={loading || !health || (!engineReady && !analysisOnly) || (source === 'file' ? !file : !url.trim())} onClick={() => void start()}>{loading && uploadProgress !== null ? <LoaderCircle className="spin" size={18} /> : <AudioLines size={18} />}{analysisOnly ? '원본 가져와서 분석하기' : '악기 분리 시작'}<ArrowRight size={17} /></button>
             {!engineReady && !checking && <p className="engine-hint">{health ? '실제 음악 분리는 SAM Audio 서버가 준비되면 사용할 수 있어요.' : '음악 처리 서버에 연결하면 사용할 수 있어요.'}<button onClick={() => setEngineModal(true)}>연결 상태 <ArrowUpRight size={12} /></button></p>}
             <div className="upload-footnote"><ShieldCheck size={13} /><span>직접 제작했거나 사용할 권한이 있는 음악을 가져와주세요.</span></div>
           </section><aside className="workflow-card"><span className="eyebrow">FROM SOUND TO SHEET</span><h2>음악이 악보가 되는 순간</h2><p className="workflow-intro">복잡한 과정은 덜고,<br />음악에 더 가까이.</p><div className="workflow-steps"><div><span className="workflow-icon"><UploadCloud size={20} /></span><div><small>01 · BRING YOUR MUSIC</small><h3>음악 가져오기</h3><p>파일이나 YouTube 링크 하나면 충분해요.</p></div></div><div><span className="workflow-icon"><AudioLines size={20} /></span><div><small>02 · FIND EACH SOUND</small><h3>악기별로 나누기</h3><p>여섯 악기를 분리하고 따로 들어보세요.</p></div></div><div><span className="workflow-icon"><FileMusic size={20} /></span><div><small>03 · MAKE IT YOURS</small><h3>나에게 맞는 악보 만들기</h3><p>악보를 읽기 편하게 맞추고 저장하세요.</p></div></div></div><div className="workflow-footer"><span>♩</span><p>완벽한 악보보다,<br /><strong>내가 읽기 편한 악보.</strong></p></div></aside></div>

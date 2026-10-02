@@ -7,8 +7,11 @@ async function readResponse<T>(response: Response): Promise<T> {
 }
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  try { return await readResponse<T>(await fetch(path, options)); }
+  const deadline = AbortSignal.timeout(20_000);
+  const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  try { return await readResponse<T>(await fetch(path, { ...options, signal })); }
   catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') throw new Error('서버 응답이 늦어지고 있어요. 잠시 뒤 다시 시도해주세요.');
     if (error instanceof TypeError) throw new Error('서버에 연결할 수 없어요. 음악 처리 서버가 실행 중인지 확인해주세요.');
     throw error;
   }

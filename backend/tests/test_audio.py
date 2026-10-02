@@ -32,7 +32,7 @@ def finish(client, job):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         job = client.get(f'/api/jobs/{job["id"]}').json()
-        if job["status"] not in {"queued", "running", "transcribing"}:
+        if job["status"] not in {"queued", "running", "transcribing", "analyzing"}:
             return job
         time.sleep(0.02)
     pytest.fail("Worker did not finish")

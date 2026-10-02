@@ -13,15 +13,33 @@ export type Stem = {
   score_warning?: string;
   score_bpm?: number;
   score_revision?: string;
+  score_edited?: boolean;
+  score_title?: string;
+  score_layout?: ScoreLayout;
+  score_tab_mode?: 'staff' | 'both' | 'tab';
+  score_tab_unassigned?: number;
   note_count?: number;
   quiet?: boolean;
 };
+export type ScorePreset = 'practice' | 'standard' | 'large';
+export type ScoreLayout = { preset: ScorePreset; measures_per_line: 2 | 4; show_numbers: boolean; beam_group?: 'beat' | 'half' };
+export type ScoreNote = { id: string; start: number; length: number; pitch: number; velocity: number; string?: number | null; fret?: number | null };
+export type TabSettings = { mode: 'staff' | 'both' | 'tab'; tuning: number[] };
+export type ScoreLyric = { id: string; start: number; text: string };
+export type ScoreAnnotation = { measure: number; section: string; cue: string };
+export type ScoreDocument = {
+  version: 1; instrument: Instrument; title: string; bpm: number; ticks: number;
+  revision: string; edited: boolean; notes: ScoreNote[]; annotations: ScoreAnnotation[]; layout: ScoreLayout;
+  timing_bpm?: number; audio_offset?: number; tab?: TabSettings | null; lyrics?: ScoreLyric[];
+};
+export type LyricCue = { id: string; start: number; end: number; text: string };
+export type LyricCandidate = { revision: string; cues: LyricCue[]; language?: string; source?: 'original' | 'vocal'; warning?: string };
 export type Job = {
   id: string;
   title: string;
   source_type: string;
   demo: boolean;
-  status: 'queued' | 'running' | 'separated' | 'transcribing' | 'completed' | 'error' | 'cancelled';
+  status: 'queued' | 'running' | 'separated' | 'transcribing' | 'analyzing' | 'completed' | 'error' | 'cancelled';
   stage: string;
   progress: number;
   message: string;
@@ -32,15 +50,21 @@ export type Job = {
   original_url: string | null;
   residual_url: string | null;
   stems: Stem[];
+  analysis_only?: boolean;
+  analysis_error?: string | null;
+  rhythm_analysis?: { bpm: number; first_beat_seconds: number; beat_times: number[]; regularity: number; analyzed_seconds: number; alternatives: number[]; warning: string };
+  lyric_candidate?: LyricCandidate;
+  lyric_guide?: LyricCandidate;
 };
 export type Health = {
   ok: boolean;
   engine: { available: boolean; model: string; device: string; issues: string[]; transcription_available: boolean };
   limits: { max_upload_mb: number; max_audio_seconds: number };
+  lyrics?: { available: boolean; model: string; device: string; compute_type: string };
 };
 
 export function isProcessing(job: Job | null): boolean {
-  return !!job && ['queued', 'running', 'transcribing'].includes(job.status);
+  return !!job && ['queued', 'running', 'transcribing', 'analyzing'].includes(job.status);
 }
 
 export function formatTime(seconds: number | null | undefined): string {

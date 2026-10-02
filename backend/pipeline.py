@@ -1,7 +1,6 @@
 import logging
 import threading
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
@@ -9,7 +8,8 @@ import soundfile as sf
 from . import demo, store
 from .config import INSTRUMENTS, LABELS
 from .media import download_youtube, normalize
-from .score import export_score, transcribe
+from .score import transcribe
+from .editing import generate_score, notation_metadata
 from .separator import ENGINE, Cancelled, check_cancel, save_audio, separate_sequential, waveform
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def fail(job_id: str, error: Exception):
     store.update(job_id, status="error", error=message, message="작업을 완료하지 못했어요")
 
 
-def run_separation(job_id: str, event: threading.Event, source: Path | None = None, url: str | None = None):
+def run_separation(job_id: str, event: threading.Event, source: Path | None = None, url: str | None = None, analysis_only=False):
     try:
         folder = store.directory(job_id)
         store.update(job_id, status="running", stage="preparing", progress=2, message="음악 파일을 준비하고 있어요")
@@ -60,6 +60,12 @@ def run_separation(job_id: str, event: threading.Event, source: Path | None = No
         if source is None:
             raise ValueError("음악 파일이 없어요.")
         duration = normalize(source, folder / "original.wav")
+        if analysis_only:
+            check_cancel(event)
+            store.update(job_id, duration=duration, original_url=store.asset_url(job_id, "original.wav"),
+                         status="separated", stage="done", progress=100,
+                         message="원본을 준비했어요. 악기 분리는 실행하지 않았으며 BPM·가사 분석을 사용할 수 있어요.")
+            return
         store.update(job_id, duration=duration, original_url=store.asset_url(job_id, "original.wav"), progress=7, stage="separating", message="SAM Audio 모델을 준비하고 있어요")
         audio, _ = sf.read(folder / "original.wav", dtype="float32")
         original_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
@@ -92,15 +98,15 @@ def run_demo(job_id: str, event: threading.Event):
             check_cancel(event)
             samples = stems[inst]
             save_audio(folder / f"{inst}.wav", samples)
-            count = export_score(events[inst], inst, demo.TITLE, demo.BPM, demo.DURATION, folder)
-            stem_update(job_id, inst, status="ready", score_status="ready", audio_url=store.asset_url(job_id, f"{inst}.wav"), waveform=waveform(samples), score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=count, score_bpm=demo.BPM)
+            document = generate_score(events[inst], inst, demo.TITLE, demo.BPM, demo.DURATION, folder)
+            stem_update(job_id, inst, status="ready", score_status="ready", audio_url=store.asset_url(job_id, f"{inst}.wav"), waveform=waveform(samples), score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=len(document["notes"]), score_bpm=demo.BPM, score_revision=document["revision"], score_edited=False, score_layout=document["layout"], score_title=document["title"], **notation_metadata(document))
             store.update(job_id, progress=round((index + 1) / 6 * 100), stage="separating")
         store.update(job_id, status="completed", stage="done", progress=100, duration=demo.DURATION, bpm=demo.BPM, original_url=store.asset_url(job_id, "original.wav"), message="샘플 작업실이 준비됐어요")
     except Exception as error:
         fail(job_id, error)
 
 
-def run_transcription(job_id: str, event: threading.Event, instruments: list[str], bpm: int):
+def run_transcription(job_id: str, event: threading.Event, instruments: list[str], bpm: int, audio_offset=0):
     try:
         job = store.get(job_id)
         folder = store.directory(job_id)
@@ -113,8 +119,9 @@ def run_transcription(job_id: str, event: threading.Event, instruments: list[str
                 # Demo uses known composition events and never calls inference.
                 events = demo.generate()[1][inst] if job["demo"] else transcribe(folder / f"{inst}.wav", inst)
                 check_cancel(event)
-                count = export_score(events, inst, job["title"], bpm, job["duration"], folder)
-                stem_update(job_id, inst, score_status="ready", score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=count, score_bpm=bpm, score_revision=uuid4().hex, score_warning="드럼은 온셋·주파수 기반 리듬 초안이에요. 킥·스네어·하이햇 구분을 확인해주세요." if inst == "drums" else "16분음표 기준으로 정리한 자동 채보 초안이에요. 음정·리듬을 확인해주세요.")
+                document = generate_score(events, inst, job["title"], bpm, job["duration"], folder, audio_offset,
+                                          job.get("lyric_guide", {}).get("cues"))
+                stem_update(job_id, inst, score_status="ready", score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=len(document["notes"]), score_bpm=bpm, score_revision=document["revision"], score_edited=False, score_layout=document["layout"], score_title=document["title"], score_warning="드럼은 온셋·주파수 기반 리듬 초안이에요. 킥·스네어·하이햇 구분을 확인해주세요." if inst == "drums" else "16분음표 기준으로 정리한 자동 채보 초안이에요. 음정·리듬을 확인해주세요.", **notation_metadata(document))
             except Cancelled:
                 raise
             except Exception:
@@ -124,3 +131,34 @@ def run_transcription(job_id: str, event: threading.Event, instruments: list[str
         store.update(job_id, status="completed", stage="done", progress=100, message="채보가 끝났어요. 악보를 확인하고 편한 크기로 조절해보세요.")
     except Exception as error:
         fail(job_id, error)
+
+
+def run_cpu_analysis(job_id, event, kind, previous_status, source="original", language="auto"):
+    try:
+        folder = store.directory(job_id)
+        check_cancel(event)
+        if kind == "beats":
+            from .analysis import analyze_beats
+            result = analyze_beats(folder / "original.wav")
+            check_cancel(event)
+            store.update(job_id, rhythm_analysis=result)
+        else:
+            from .lyrics import recognize
+            duration = store.get(job_id)["duration"]
+            def emit(seconds):
+                store.update(job_id, progress=min(95, round(5 + seconds / duration * 90)), message="가사를 인식하고 단어 시간을 맞추고 있어요")
+            result = recognize(folder / f"{source}.wav", language, event, emit)
+            result["cues"] = [{**c, "end": min(c["end"], duration)} for c in result["cues"] if c["start"] < duration]
+            result["source"] = source
+            if not result["cues"]:
+                raise ValueError("곡 안에 배치할 가사를 찾지 못했어요.")
+            store.update(job_id, lyric_candidate=result)
+        store.update(job_id, status=previous_status, stage="done", progress=100,
+                     analysis_previous_status=None, analysis_error=None, message="분석 초안을 준비했어요. 확인 후 적용해주세요.")
+    except Exception as error:
+        logger.exception("CPU analysis %s failed for %s", kind, job_id)
+        message = str(error) if isinstance(error, ValueError) else "분석에 실패했어요. 패키지·모델 다운로드·서버 로그를 확인해주세요. 기존 악보는 보존했어요."
+        store.update(job_id, status=previous_status, stage="done", progress=100,
+                     analysis_previous_status=None,
+                     analysis_error=None if isinstance(error, Cancelled) else message,
+                     message="분석을 중단했어요. 기존 악보는 보존했어요." if isinstance(error, Cancelled) else message)
