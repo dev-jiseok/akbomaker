@@ -689,6 +689,12 @@ input[type='range'] { accent-color: #8c9f76; cursor: pointer; height: 4px; }
 .cue-row { display: grid; grid-template-columns: 30px 85px 85px minmax(0, 1fr) 30px; align-items: end; gap: 9px; margin: 10px 0; }
 .cue-row input { width: 100%; }.cue-row .icon-button { margin-bottom: 4px; }.cue-pagination { display: flex; justify-content: center; align-items: center; gap: 10px; font-size: 12px; margin: 14px 0; }
 .notation-options { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin: 16px 0; }.notation-options > span { font-size: 10px; color: var(--muted); max-width: 270px; line-height: 1.8; }
+.meter-editor { border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 16px; min-width: 0; }
+.meter-editor > .bulk-row { margin-top: 0; }
+.meter-changes { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; }
+.meter-changes > span { display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; background: var(--paper); }
+.generation-meter { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); margin: 8px 0; }
+.generation-meter select { border: 1px solid var(--line); background: #fff; border-radius: 5px; padding: 7px; color: var(--ink); }
 .grid-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px; border: 1px solid #dde7d2; background: #f6f9f2; border-radius: 7px; font-size: 11px; color: #62744f; margin-bottom: 12px; }.grid-legend b { color: #536e38; margin-right: 6px; }
 .note-cell.selected-cell { outline: 2px solid #b89847; outline-offset: -1px; }.duration-shortcuts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 14px; }.duration-shortcuts > span { font-size: 11px; color: var(--muted); margin-right: auto; }
 .score-playback { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 22px; background: #edf3e5; padding: 14px; border: 1px solid #d8e4c8; border-radius: 8px; }.score-playback > div { display: grid; gap: 5px; margin-right: auto; }.score-playback strong { font-size: 12px; }.score-playback small { color: var(--muted); font-size: 10px; }.score-playback .check-label { display: flex; align-self: center; margin-top: 15px; }

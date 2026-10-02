@@ -17,7 +17,8 @@ from . import store
 from .config import INSTRUMENTS, MAX_AUDIO_SECONDS, MAX_UPLOAD_BYTES, ROOT
 from .media import EXTENSIONS, youtube_url
 from .pipeline import run_demo, run_separation, run_transcription, run_cpu_analysis, stem_update
-from .editing import ScoreEdit, load_document, persist, validate_edit, notation_metadata
+from .editing import Meter, ScoreEdit, load_document, persist, validate_edit, notation_metadata
+from .rhythm import normalize_meters, measure_map
 from .separator import engine_status
 from . import lyrics
 from . import score_import
@@ -247,6 +248,7 @@ class TranscriptionRequest(BaseModel):
     bpm: int = Field(default=120, ge=40, le=240)
     overwrite_edits: bool = False
     audio_offset: float = Field(default=0, ge=0, le=600, allow_inf_nan=False)
+    meter: Meter = Field(default_factory=lambda: Meter(measure=1, beats=4, beat_type=4))
 
 
 @app.post("/api/jobs/{job_id}/transcribe", status_code=202)
@@ -271,10 +273,22 @@ def start_transcription(job_id: str, body: TranscriptionRequest):
         raise HTTPException(409, "직접 수정한 악보가 있어요. 다시 채보하면 수정본을 대체하므로 먼저 확인해주세요.")
     if not job["demo"] and any(inst != "drums" for inst in instruments) and not engine_status()["transcription_available"]:
         raise HTTPException(503, "서버에 Basic Pitch 채보 엔진을 설치해주세요.")
+    meters = generation_meters(body, job["duration"])
     event = reserve(job_id)
     job = store.update(job_id, status="transcribing", stage="transcribing", progress=0, error=None)
-    submit(job_id, run_transcription, event, instruments, body.bpm, body.audio_offset)
+    submit(job_id, run_transcription, event, instruments, body.bpm, body.audio_offset, meters)
     return job
+
+
+def generation_meters(body, duration):
+    try:
+        if body.meter.measure != 1:
+            raise ValueError("새 채보의 박자표는 첫 마디에 지정해주세요.")
+        meters = normalize_meters([body.meter.model_dump()])
+        measure_map(max(1, (duration - body.audio_offset) * body.bpm / 60 * 4 - 1e-9), meters, exact=False)
+        return meters
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 def score_stem(job_id, inst):
@@ -404,8 +418,9 @@ def new_empty_score(job_id: str, inst: str, body: TranscriptionRequest):
         if body.audio_offset >= job["duration"]:
             raise HTTPException(422, "첫 박 위치가 곡 범위를 벗어났어요.")
         from .editing import generate_score
+        meters = generation_meters(body, job["duration"])
         doc = generate_score([], inst, job["title"], body.bpm, job["duration"], store.directory(job_id),
-                             body.audio_offset, job.get("lyric_guide", {}).get("cues"))
+                             body.audio_offset, job.get("lyric_guide", {}).get("cues"), meters)
         doc["edited"] = True
         persist(doc, store.directory(job_id))
         stem_update(job_id, inst, score_status="ready", score_url=store.asset_url(job_id, f"{inst}.musicxml"),
@@ -553,7 +568,7 @@ def archive(job_id: str):
             if path.is_file():
                 bundle.write(path, name)
         source_note = "Imported MusicXML score. No audio separation or transcription.\n" if job["source_type"] == "musicxml" else "Original audio only. SAM inference not run.\n" if job.get("analysis_only") else "Original synthesized demo. Not SAM Audio inference.\n" if job["demo"] else "SAM Audio sequential source separation.\n"
-        bundle.writestr("README.txt", "Akbo Maker\n" + source_note + "Scores use a 1/16-note grid in 4/4. Check pitches and rhythm.\nAutomatic drum transcription uses experimental spectral-onset estimates.\n")
+        bundle.writestr("README.txt", "Akbo Maker\n" + source_note + "Scores use a 1/16-note grid with saved time signatures. BPM is quarter notes per minute. Check pitches and rhythm.\nAutomatic drum transcription uses experimental spectral-onset estimates.\n")
     temporary.replace(target)
     return FileResponse(target, media_type="application/zip", filename=f"akbo-{job_id[:8]}.zip")
 

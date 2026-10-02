@@ -63,7 +63,8 @@ def test_unrepresentable_timing_rejected(tmp_path, case):
     if case == "fractional":
         tree.find(".//divisions").text = "3"
     elif case == "meter":
-        tree.find(".//beats").text = "3"
+        tree.find(".//beats").text = "5"
+        tree.find(".//beat-type").text = "8"
     elif case == "tempo":
         ET.SubElement(tree.find("part/measure[@number='2']"), "sound", tempo="100")
     elif case == "unclosed_tie":

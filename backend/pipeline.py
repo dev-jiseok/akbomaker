@@ -106,7 +106,7 @@ def run_demo(job_id: str, event: threading.Event):
         fail(job_id, error)
 
 
-def run_transcription(job_id: str, event: threading.Event, instruments: list[str], bpm: int, audio_offset=0):
+def run_transcription(job_id: str, event: threading.Event, instruments: list[str], bpm: int, audio_offset=0, meters=None):
     try:
         job = store.get(job_id)
         folder = store.directory(job_id)
@@ -120,7 +120,7 @@ def run_transcription(job_id: str, event: threading.Event, instruments: list[str
                 events = demo.generate()[1][inst] if job["demo"] else transcribe(folder / f"{inst}.wav", inst)
                 check_cancel(event)
                 document = generate_score(events, inst, job["title"], bpm, job["duration"], folder, audio_offset,
-                                          job.get("lyric_guide", {}).get("cues"))
+                                          job.get("lyric_guide", {}).get("cues"), meters)
                 stem_update(job_id, inst, score_status="ready", score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=len(document["notes"]), score_bpm=bpm, score_revision=document["revision"], score_edited=False, score_layout=document["layout"], score_title=document["title"], score_warning="드럼은 온셋·주파수 기반 리듬 초안이에요. 킥·스네어·하이햇 구분을 확인해주세요." if inst == "drums" else "16분음표 기준으로 정리한 자동 채보 초안이에요. 음정·리듬을 확인해주세요.", **notation_metadata(document))
             except Cancelled:
                 raise

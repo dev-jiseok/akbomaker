@@ -13,6 +13,7 @@ export type Stem = {
   score_error?: string;
   score_warning?: string;
   score_bpm?: number;
+  score_meters?: ScoreMeter[];
   score_revision?: string;
   score_edited?: boolean;
   score_title?: string;
@@ -28,10 +29,12 @@ export type ScoreNote = { id: string; start: number; length: number; pitch: numb
 export type TabSettings = { mode: 'staff' | 'both' | 'tab'; tuning: number[]; order?: 'tab-first' | 'staff-first'; capo?: number };
 export type ScoreLyric = { id: string; start: number; text: string };
 export type ScoreAnnotation = { measure: number; section: string; cue: string };
+export type ScoreMeter = { measure: number; beats: number; beat_type: number };
 export type ScoreDocument = {
   version: 1; instrument: Instrument; title: string; bpm: number; ticks: number;
   revision: string; edited: boolean; notes: ScoreNote[]; annotations: ScoreAnnotation[]; layout: ScoreLayout;
   timing_bpm?: number; audio_offset?: number; tab?: TabSettings | null; lyrics?: ScoreLyric[];
+  meters?: ScoreMeter[];
 };
 export type LyricCue = { id: string; start: number; end: number; text: string };
 export type LyricCandidate = { revision: string; cues: LyricCue[]; language?: string; source?: 'original' | 'vocal'; warning?: string };

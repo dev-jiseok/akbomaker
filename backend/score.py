@@ -7,6 +7,7 @@ from pathlib import Path
 import mido
 import numpy as np
 import soundfile as sf
+from .rhythm import measure_map, normalize_meters, grouping_ticks
 
 PROGRAMS = {"vocal": 53, "bass": 33, "drums": 0, "synthesizer": 89, "guitar": 25, "piano": 1}
 NAMES = {"vocal": "Vocal", "bass": "Bass", "drums": "Drums", "synthesizer": "Synthesizer", "guitar": "Guitar", "piano": "Piano"}
@@ -88,7 +89,7 @@ DRUM_NOTATION = {
 
 def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration: float, folder: Path,
                  *, quantized=None, layout=None, annotations=None, edited=False,
-                 tab=None, positions=None, lyrics=None):
+                 tab=None, positions=None, lyrics=None, meters=None, ticks=None):
     notes = quantize(events, bpm, duration) if quantized is None else quantized
     layout = layout or {"preset": "practice" if inst == "drums" else "standard", "measures_per_line": 4}
     annotations = {item["measure"]: item for item in (annotations or [])}
@@ -131,12 +132,15 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
         if inst == "drums":
             child(midi, "midi-unpitched", pitch + 1)
     part = child(root, "part", id="P1")
-    measures = max(1, math.ceil(duration * bpm / 60 / 4 - 1e-9))
+    meters = normalize_meters(meters)
+    bars = measure_map(ticks if ticks is not None else max(1, math.ceil(duration * bpm / 60 * 4 - 1e-9)), meters, exact=ticks is not None)
+    measures = len(bars)
     types = {16: ("whole", False), 12: ("half", True), 8: ("half", False), 6: ("quarter", True), 4: ("quarter", False), 3: ("eighth", True), 2: ("eighth", False), 1: ("16th", False)}
     pitch_names = [("C", 0), ("C", 1), ("D", 0), ("E", -1), ("E", 0), ("F", 0), ("F", 1), ("G", 0), ("A", -1), ("A", 0), ("B", -1), ("B", 0)]
-    for number in range(measures):
+    for number, bar in enumerate(bars):
         measure = child(part, "measure", number=str(number + 1))
-        lo, hi = number * 16, (number + 1) * 16
+        lo, hi = bar["start"], bar["end"]
+        beat_ticks = grouping_ticks(bar)
         page_break = number + 1 in layout.get("page_breaks", [])
         if number == 0 or number % layout.get("measures_per_line", 4) == 0 or number + 1 in layout.get("system_breaks", []) or page_break:
             printing = child(measure, "print", **({"new-page": "yes"} if page_break else {"new-system": "yes"} if number else {}))
@@ -151,8 +155,8 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
             child(attrs, "divisions", 4)
             child(child(attrs, "key"), "fifths", 0)
             time = child(attrs, "time")
-            child(time, "beats", 4)
-            child(time, "beat-type", 4)
+            child(time, "beats", bar["beats"])
+            child(time, "beat-type", bar["beat_type"])
             if tab_mode == "both":
                 child(attrs, "staves", 2)
             if tab_mode != "tab":
@@ -204,6 +208,10 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                 child(child(capo_direction, "direction-type"), "words", f"Capo {tab['capo']} · frets relative to capo")
                 if tab_mode == "both":
                     child(capo_direction, "staff", 1)
+        elif any(m["measure"] == number + 1 for m in meters):
+            time = child(child(measure, "attributes"), "time")
+            child(time, "beats", bar["beats"])
+            child(time, "beat-type", bar["beat_type"])
         in_bar = [n for n in notes if n[0] < hi and n[1] > lo]
         playable = [n for n in in_bar if tab_positions.get(n[:3], (None, None))[0] is not None]
         if tab_mode == "both":
@@ -217,7 +225,7 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
         lyric_voice = 1 if tab_mode == "both" else 0
         for voice_index, (voice_notes, staff, is_tab) in enumerate(voices):
             if voice_index:
-                child(child(measure, "backup"), "duration", 16)
+                child(child(measure, "backup"), "duration", hi - lo)
             bounds = sorted({lo, hi, *[max(lo, n[0]) for n in voice_notes], *[min(hi, n[1]) for n in voice_notes],
                              *[tick for tick in lyric_map if lo <= tick < hi and voice_index == lyric_voice]})
             for start, end in zip(bounds, bounds[1:]):
@@ -225,7 +233,12 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                 position = start
                 while position < end:
                     # Offbeat notes/rests must not hide beat boundaries.
-                    remaining = min(end - position, 4 - position % 4) if position % 4 else end - position
+                    local = position - lo
+                    remaining = min(end - position, beat_ticks - local % beat_ticks) if local % beat_ticks else end - position
+                    # Compound meter reads as dotted-quarter beats; do not
+                    # obscure the 3+3 / 3+3+3 eighth-note subdivisions.
+                    if bar["beat_type"] == 8:
+                        remaining = min(remaining, beat_ticks - local % beat_ticks)
                     size = next(value for value in types if value <= remaining)
                     for index, (pitch, event) in enumerate(sorted(active.items()) if active else [(None, None)]):
                         note = write_note(measure, pitch, event, index, inst, position, size, types, pitch_names,
@@ -239,12 +252,13 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                             child(lyric, "text", lyric_map[position], **{"font-size": "11"})
                     position += size
             if not is_tab:
-                beam_voice(measure, str(voice_index + 1), 8 if layout.get("beam_group", "half" if inst == "drums" else "beat") == "half" else 4)
+                group = beat_ticks if bar["beat_type"] == 8 else 8 if layout.get("beam_group", "half" if inst == "drums" else "beat") == "half" else 4
+                beam_voice(measure, str(voice_index + 1), group, 2 if bar["beat_type"] == 8 else 4)
         if number == measures - 1:
             child(child(measure, "barline", location="right"), "bar-style", "light-heavy")
     ET.indent(root)
     ET.ElementTree(root).write(folder / f"{inst}.musicxml", encoding="utf-8", xml_declaration=True)
-    write_midi(notes, inst, bpm, folder)
+    write_midi(notes, inst, bpm, folder, bars=bars, meters=meters)
     return len(notes)
 
 
@@ -314,7 +328,7 @@ def write_note(measure, pitch, event, index, inst, position, size, types, pitch_
     return note
 
 
-def beam_voice(measure, voice, group_ticks=4):
+def beam_voice(measure, voice, group_ticks=4, secondary_ticks=4):
     """Explicit beat-grouped beams survive export and percussion stem directions."""
     groups, current, position, beat = [], [], 0, -1
     for note in measure.findall("note"):
@@ -345,8 +359,8 @@ def beam_voice(measure, voice, group_ticks=4):
             if note.findtext("type") == "16th":
                 # The primary beam spans two beats in the rehearsal preset;
                 # secondary beams retain readable quarter-note subdivisions.
-                before = index > 0 and group[index - 1][0].findtext("type") == "16th" and group[index - 1][1] // 4 == position // 4
-                after = index + 1 < len(group) and group[index + 1][0].findtext("type") == "16th" and group[index + 1][1] // 4 == position // 4
+                before = index > 0 and group[index - 1][0].findtext("type") == "16th" and group[index - 1][1] // secondary_ticks == position // secondary_ticks
+                after = index + 1 < len(group) and group[index + 1][0].findtext("type") == "16th" and group[index + 1][1] // secondary_ticks == position // secondary_ticks
                 secondary = ET.Element("beam", number="2")
                 secondary.text = "continue" if before and after else "end" if before else "begin" if after else "forward hook" if index == 0 else "backward hook"
                 anchor = note.find("notations")
@@ -355,20 +369,28 @@ def beam_voice(measure, voice, group_ticks=4):
                 note.insert(list(note).index(anchor) if anchor is not None else len(note), secondary)
 
 
-def write_midi(notes, inst, bpm, folder):
+def write_midi(notes, inst, bpm, folder, *, bars=None, meters=None):
     mid = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
     mid.tracks.append(track)
     track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(bpm), time=0))
-    track.append(mido.MetaMessage("time_signature", numerator=4, denominator=4))
+    meters = normalize_meters(meters)
+    initial = meters[0]
+    track.append(mido.MetaMessage("time_signature", numerator=initial["beats"], denominator=initial["beat_type"], clocks_per_click=36 if initial["beat_type"] == 8 else 24))
     channel = 9 if inst == "drums" else 0
     track.append(mido.Message("program_change", program=PROGRAMS[inst] - 1 if inst != "drums" else 0, channel=channel))
     midi_events = []
     for start, end, pitch, amplitude in notes:
-        midi_events.append((start * 120, 1, pitch, min(127, max(1, round(amplitude * 100)))))
-        midi_events.append((end * 120, 0, pitch, 0))
+        midi_events.append((start * 120, 2, pitch, mido.Message("note_on", note=pitch, velocity=min(127, max(1, round(amplitude * 100))), channel=channel)))
+        midi_events.append((end * 120, 1, pitch, mido.Message("note_off", note=pitch, velocity=0, channel=channel)))
+    if bars:
+        for meter in meters[1:]:
+            midi_events.append((bars[meter["measure"] - 1]["start"] * 120, 0, -1,
+                                mido.MetaMessage("time_signature", numerator=meter["beats"], denominator=meter["beat_type"], clocks_per_click=36 if meter["beat_type"] == 8 else 24)))
     previous = 0
-    for tick, on, pitch, velocity in sorted(midi_events):
-        track.append(mido.Message("note_on" if on else "note_off", note=pitch, velocity=velocity, time=tick - previous, channel=channel))
+    for tick, priority, pitch, message in sorted(midi_events, key=lambda e: e[:3]):
+        track.append(message.copy(time=tick - previous))
         previous = tick
+    if bars:
+        track.append(mido.MetaMessage("end_of_track", time=max(0, bars[-1]["end"] * 120 - previous)))
     mid.save(folder / f"{inst}.mid")

@@ -4,7 +4,6 @@ import math
 import re
 import shutil
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -13,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from .score import export_score, quantize
 from .tablature import default_tab, assign_positions
+from .rhythm import measure_map, normalize_meters
 
 
 def xml_text(value):
@@ -71,12 +71,20 @@ class Layout(BaseModel):
     page_breaks: list[StrictInt] = Field(default_factory=list, max_length=600)
 
 
+class Meter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    measure: StrictInt = Field(ge=1, le=600)
+    beats: StrictInt
+    beat_type: StrictInt
+
+
 class ScoreEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_revision: str = Field(max_length=80)
     title: str = Field(min_length=1, max_length=180)
     bpm: StrictInt = Field(ge=40, le=240)
-    ticks: StrictInt | None = Field(default=None, ge=16, le=9600)
+    ticks: StrictInt | None = Field(default=None, ge=8, le=14400)
+    meters: list[Meter] | None = Field(default=None, min_length=1, max_length=600)
     notes: list[Note] = Field(max_length=30_000)
     annotations: list[Annotation] = Field(default_factory=list, max_length=600)
     layout: Layout
@@ -85,9 +93,10 @@ class ScoreEdit(BaseModel):
     _xml_text = field_validator("title")(xml_text)
 
 
-def create_document(events, inst, title, bpm, duration, audio_offset=0):
+def create_document(events, inst, title, bpm, duration, audio_offset=0, meters=None):
     effective_duration = max(.001, duration - audio_offset)
-    ticks = max(16, math.ceil(effective_duration * bpm / 60 / 4 - 1e-9) * 16)
+    meters = normalize_meters(meters)
+    ticks = measure_map(max(1, math.ceil(effective_duration * bpm / 60 * 4 - 1e-9)), meters, exact=False)[-1]["end"]
     shifted = [(max(0, a - audio_offset), b - audio_offset, p, v) for a, b, p, v in events if b > audio_offset]
     quantized = quantize(shifted, bpm, effective_duration)
     # Drum resonance is not a rhythmic duration. Notate hats in eighths and
@@ -110,7 +119,7 @@ def create_document(events, inst, title, bpm, duration, audio_offset=0):
     if tab:
         notes = assign_positions(notes, tab["tuning"])
     return {"version": 1, "instrument": inst, "title": title, "bpm": bpm, "timing_bpm": bpm, "audio_offset": audio_offset,
-            "ticks": ticks, "revision": uuid4().hex, "edited": False, "notes": notes,
+            "ticks": ticks, "meters": meters, "revision": uuid4().hex, "edited": False, "notes": notes,
             "tab": tab, "lyrics": [], "annotations": [], "layout": {"preset": "practice" if inst in {"drums", "bass", "guitar"} else "standard",
                                           "measures_per_line": 4, "show_numbers": True, "beam_group": "half" if inst == "drums" else "beat"}}
 
@@ -124,7 +133,8 @@ def persist(document, folder: Path, *, automatic=False):
         export_score([], inst, document["title"], document["bpm"], document["ticks"] / 4 * 60 / document["bpm"],
                      staging, quantized=sorted(notes), layout=document["layout"],
                      annotations=document["annotations"], edited=document["edited"],
-                     tab=document.get("tab"), positions=document["notes"], lyrics=document.get("lyrics", []))
+                     tab=document.get("tab"), positions=document["notes"], lyrics=document.get("lyrics", []),
+                     meters=document.get("meters"), ticks=document["ticks"])
         data = json.dumps(document, ensure_ascii=False)
         (staging / f"{inst}.score.json").write_text(data)
         if automatic:
@@ -135,8 +145,8 @@ def persist(document, folder: Path, *, automatic=False):
         shutil.rmtree(staging)
 
 
-def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, lyric_cues=None):
-    document = create_document(events, inst, title, bpm, duration, audio_offset)
+def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, lyric_cues=None, meters=None):
+    document = create_document(events, inst, title, bpm, duration, audio_offset, meters)
     if lyric_cues:
         from .lyrics import timed_lyrics
         document["lyrics"], _ = timed_lyrics(lyric_cues, document)
@@ -146,7 +156,7 @@ def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, l
 
 def notation_metadata(document):
     tab = document.get("tab")
-    return {"score_tab_mode": tab["mode"] if tab else "staff",
+    return {"score_meters": normalize_meters(document.get("meters")), "score_tab_mode": tab["mode"] if tab else "staff",
             "score_tab_unassigned": sum(n.get("string") is None for n in document["notes"]) if tab else 0}
 
 
@@ -160,6 +170,7 @@ def load_document(folder, inst, duration, *, original=False):
             document["timing_bpm"] = json.loads(automatic.read_text()).get("bpm", document["bpm"]) if automatic.exists() else document["bpm"]
         document.setdefault("lyrics", [])
         document.setdefault("audio_offset", 0)
+        document.setdefault("meters", normalize_meters())
         # Legacy files used one-beat beams. Keep their saved layout until the
         # user explicitly selects/saves two-beat grouping; new drums use half.
         document["layout"].setdefault("beam_group", "beat")
@@ -172,46 +183,14 @@ def load_document(folder, inst, duration, *, original=False):
             document["tab"].setdefault("order", "staff-first")
             document["tab"].setdefault("capo", 0)
         return document
-    # Upgrade scores generated by the first version without rerunning inference.
+    # The first version wrote only XML. Reuse the bounded importer so bar
+    # lengths and written/concert transposition are handled consistently.
     xml = folder / f"{inst}.musicxml"
     if not xml.is_file():
         raise FileNotFoundError
-    tree = ET.parse(xml)
-    bpm = round(float(tree.findtext(".//per-minute", "120")))
-    events, active_ties = [], {}
-    base = 0
-    for measure in tree.findall("part/measure"):
-        position, previous_start = 0, 0
-        for node in measure:
-            if node.tag == "backup":
-                position -= int(node.findtext("duration", "0"))
-            if node.tag != "note":
-                continue
-            length = int(node.findtext("duration", "0"))
-            start = previous_start if node.find("chord") is not None else position
-            if node.find("chord") is None:
-                previous_start, position = start, position + length
-            if node.find("rest") is not None:
-                continue
-            if inst == "drums":
-                pitch = int(node.find("instrument").get("id")[1:])
-            else:
-                step = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[node.findtext("pitch/step")]
-                pitch = (int(node.findtext("pitch/octave")) + 1) * 12 + step + int(node.findtext("pitch/alter", "0"))
-            a, b = (base + start) * 60 / bpm / 4, (base + start + length) * 60 / bpm / 4
-            ties = {tie.get("type") for tie in node.findall("tie")}
-            if "stop" in ties and pitch in active_ties:
-                index = active_ties[pitch]
-                events[index] = (events[index][0], b, pitch, 0.8)
-            else:
-                index = len(events)
-                events.append((a, b, pitch, 0.8))
-            if "start" in ties:
-                active_ties[pitch] = index
-            else:
-                active_ties.pop(pitch, None)
-        base += 16
-    document = create_document(events, inst, tree.findtext("work/work-title", "음악"), bpm, duration)
+    from .score_import import import_document
+    document, _, _ = import_document(xml.read_bytes(), xml.name, "P1", inst)
+    document["edited"] = False
     for kind in ("score", "auto"):
         (folder / f"{inst}.{kind}.json").write_text(json.dumps(document, ensure_ascii=False))
     return document
@@ -219,8 +198,8 @@ def load_document(folder, inst, duration, *, original=False):
 
 def validate_edit(edit: ScoreEdit, current: dict):
     ticks = edit.ticks if edit.ticks is not None else current["ticks"]
-    if ticks % 16:
-        raise ValueError("악보 길이는 4/4 마디 단위로 지정해주세요.")
+    meters = normalize_meters([m.model_dump() for m in edit.meters] if edit.meters is not None else current.get("meters"))
+    bars = measure_map(ticks, meters)
     seen, by_pitch = set(), {}
     for note in edit.notes:
         if note.id in seen or note.start + note.length > ticks:
@@ -235,14 +214,15 @@ def validate_edit(edit: ScoreEdit, current: dict):
             raise ValueError("같은 음정의 음표가 겹쳐 있어요. 위치 또는 길이를 조절해주세요.")
     measures = set()
     for item in edit.annotations:
-        if item.measure > ticks // 16 or item.measure in measures:
+        if item.measure > len(bars) or item.measure in measures:
             raise ValueError("구간 메모의 마디 번호가 중복되었거나 범위를 벗어났어요.")
         measures.add(item.measure)
     data = edit.model_dump(exclude={"base_revision"})
     data["ticks"] = ticks
+    data["meters"] = meters
     for key in ("system_breaks", "page_breaks"):
         breaks = data["layout"][key]
-        if len(set(breaks)) != len(breaks) or any(b < 2 or b > ticks // 16 for b in breaks):
+        if len(set(breaks)) != len(breaks) or any(b < 2 or b > len(bars) for b in breaks):
             raise ValueError("줄/페이지 시작 마디는 2마디부터 마지막 마디까지 중복 없이 지정해주세요.")
     if "tab" not in edit.model_fields_set:
         data["tab"] = current.get("tab")
