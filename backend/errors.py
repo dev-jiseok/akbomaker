@@ -1,11 +1,14 @@
 """Actionable job errors without exposing credentials or internal tracebacks."""
 import errno
+from .gpu import NoAvailableGPU
 
 
 def processing_error(error: Exception, stage: str, job_id: str) -> str:
     detail = str(error).lower()
     status = getattr(getattr(error, "response", None), "status_code", None)
-    if status in {401, 403} or "gatedrepo" in type(error).__name__.lower():
+    if isinstance(error, NoAvailableGPU):
+        reason = str(error)
+    elif status in {401, 403} or "gatedrepo" in type(error).__name__.lower():
         reason = "모델 접근이 거절됐어요. Hugging Face 모델 승인과 서버의 HF_TOKEN을 확인해주세요."
     elif "out of memory" in detail:
         reason = "GPU 메모리가 부족해요. SAM_CHUNK_SECONDS를 낮추거나 작은 모델을 사용해주세요."

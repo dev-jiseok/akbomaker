@@ -101,12 +101,18 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install --torch-backend cu128 -r backend/requiremen
 ```dotenv
 SAM_MODEL=facebook/sam-audio-base
 SAM_DEVICE=cuda
+SAM_MIN_FREE_GB=12
+SAM_MAX_GPU_UTILIZATION=10
 SAM_CHUNK_SECONDS=20
 MAX_AUDIO_SECONDS=600
 MAX_UPLOAD_MB=200
 ```
 
 모델 경로를 `SAM_MODEL`로 지정하면 로컬 체크포인트도 사용할 수 있습니다. 일반 서버 실행은 모델 다운로드와 초기화가 끝나야 요청을 받습니다. GPU 메모리가 부족하면 구간 길이를 줄이거나 작은 SAM 모델을 선택하세요. 시작 검사는 긴 실제 음원의 메모리 사용량이나 분리 품질까지 보증하지 않습니다. 모델·패키지·GPU·인증 상태는 `/api/health`와 화면의 연결 상태에서도 확인할 수 있습니다.
+
+`SAM_DEVICE=cuda` 또는 `auto`는 각 분리 작업 실행 직전에 `nvidia-smi`로 GPU 상태를 조회합니다. 기본적으로 사용률 10% 이하이고 여유 메모리 12 GiB 이상인 GPU 중 가장 여유 메모리가 많은 장치를 선택합니다. 위 환경변수로 기준을 조절할 수 있으며, 큰 모델에는 더 높은 메모리 기준이 필요합니다. `CUDA_VISIBLE_DEVICES`로 제한하거나 순서를 바꿔도 UUID로 장치를 매칭합니다. `SAM_DEVICE=cuda:1`처럼 번호를 지정하면 해당 CUDA 장치에 고정합니다.
+
+한 작업의 여섯 악기는 같은 GPU에서 처리하고, 다음 작업에서 다시 선택합니다. 조건을 만족하는 GPU가 없으면 작업에 재시도 안내를 표시하며 자동 대기하지 않습니다. 시작 검사에서도 GPU를 선택하므로 모두 사용 중이면 서버 시작이 중단됩니다. 선택한 GPU는 서버 로그와 `/api/health`의 `engine.selected_device`에서 확인할 수 있습니다(유휴 시 `null`). 사용량 조회는 다른 사용자의 GPU 예약을 보장하지 않으므로, 선택 후 다른 프로세스가 메모리를 할당하면 작업이 실패할 수 있습니다.
 
 이 앱은 텍스트 프롬프트·후보 1개·구간 예측 비활성 설정으로 분리하므로 ImageBind/CLAP/Judge 재평가 모델과 구간 예측 모델을 로드하지 않습니다. 시작 시 4초 무음으로 실제 SAM 분리를 수행해 처리기·추론·파형 반환까지 확인합니다. 이는 음악 분리 품질 평가가 아니며, 여러 GPU에 모델을 자동 분산하지 않습니다.
 

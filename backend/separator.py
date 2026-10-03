@@ -1,5 +1,6 @@
 """Official SAM Audio adapter; one inference per instrument per overlapping chunk."""
 import importlib.util
+import logging
 import gc
 import os
 import shutil
@@ -12,6 +13,7 @@ import numpy as np
 import soundfile as sf
 
 from .config import INSTRUMENTS, PROMPTS, SAMPLE_RATE
+from .gpu import select_device
 
 
 class Cancelled(Exception):
@@ -33,14 +35,14 @@ def engine_status() -> dict:
     device = os.getenv("SAM_DEVICE", "cuda")
     if installed:
         import torch
-        if device.startswith("cuda") and not torch.cuda.is_available():
+        if (device == "auto" or device.startswith("cuda")) and not torch.cuda.is_available():
             issues.append("CUDA GPU를 사용할 수 없어요.")
         model = os.getenv("SAM_MODEL", "facebook/sam-audio-base")
         if not Path(model).is_dir():
             from huggingface_hub import get_token
             if not get_token():
                 issues.append("승인된 Hugging Face 계정의 HF_TOKEN을 설정해주세요.")
-    return {"available": not issues, "model": os.getenv("SAM_MODEL", "facebook/sam-audio-base"), "device": device, "gpu_resident": ENGINE.gpu_resident, "issues": issues, "transcription_available": importlib.util.find_spec("basic_pitch") is not None}
+    return {"available": not issues, "model": os.getenv("SAM_MODEL", "facebook/sam-audio-base"), "device": device, "selected_device": ENGINE.device if ENGINE.gpu_resident else None, "gpu_resident": ENGINE.gpu_resident, "issues": issues, "transcription_available": importlib.util.find_spec("basic_pitch") is not None}
 
 
 def waveform(audio: np.ndarray, count: int = 96) -> list[float]:
@@ -64,7 +66,8 @@ class SAMSeparator:
     def __init__(self):
         self.model = None
         self.processor = None
-        self.device = os.getenv("SAM_DEVICE", "cuda")
+        self.configured_device = os.getenv("SAM_DEVICE", "cuda")
+        self.device = "cpu"
         self._on_device = False
 
     @property
@@ -86,6 +89,8 @@ class SAMSeparator:
                 raise RuntimeError("SAM Audio 모델의 샘플레이트가 예상과 다릅니다.")
             self.model, self.processor = model, processor
         # Keep the CPU copy between jobs; moving back needs no model download.
+        self.device = select_device(self.configured_device)
+        logging.getLogger("uvicorn.error").info("SAM Audio 작업 장치 선택: %s", self.device)
         self._move_model(self.device)
         self._on_device = True
 

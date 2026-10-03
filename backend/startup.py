@@ -64,7 +64,7 @@ def check_storage():
 def check_runtime():
     torch = importlib.import_module("torch")
     importlib.import_module("torchcodec")
-    device = separator.ENGINE.device
+    device = separator.select_device(separator.ENGINE.configured_device)
     # An allocation and kernel catch invalid device indices and incompatible drivers.
     value = torch.ones(1, device=device) + 1
     if value.item() != 2:

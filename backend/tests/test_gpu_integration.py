@@ -14,7 +14,7 @@ from backend.separator import SAMSeparator, engine_status, save_audio, separate_
 @pytest.mark.skipif(os.getenv("RUN_SAM_GPU_TESTS") != "1", reason="SAM model approval and CUDA GPU deferred; opt in explicitly")
 def test_real_cuda_sam_sequential_roundtrip(tmp_path):
     status = engine_status()
-    assert status["device"].startswith("cuda"), "Run the real GPU test on a CUDA host, not the CPU demo."
+    assert status["device"] == "auto" or status["device"].startswith("cuda"), "Run the real GPU test on a CUDA host, not the CPU demo."
     assert status["available"], "; ".join(status["issues"])
     # Original synthesized audio, not copyrighted song content. This verifies
     # integration, shape, serialization and summation, not separation quality.
