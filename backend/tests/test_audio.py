@@ -20,6 +20,8 @@ from backend.separator import Cancelled, chunk_starts, separate_sequential
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Ordinary API tests use mock engines; startup readiness has separate tests.
+    monkeypatch.setenv("AKBO_ALLOW_DEGRADED", "1")
     monkeypatch.setattr(store, "DATA_DIR", tmp_path)
     with TestClient(api.app) as client:
         yield client

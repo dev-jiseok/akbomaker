@@ -22,6 +22,7 @@ from .rhythm import normalize_meters, measure_map
 from .separator import engine_status
 from . import lyrics
 from . import score_import
+from .startup import prepare_engines
 
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-worker")
 EVENTS: dict[str, threading.Event] = {}
@@ -30,6 +31,7 @@ TASK_LOCK = threading.RLock()
 
 @asynccontextmanager
 async def lifespan(app):
+    app.state.engines_ready = await asyncio.to_thread(prepare_engines)
     store.recover()
     yield
     for event in list(EVENTS.values()):
@@ -106,7 +108,7 @@ def submit(job_id: str, function, event, *args):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "engine": engine_status(), "lyrics": lyrics.status(), "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024), "max_audio_seconds": MAX_AUDIO_SECONDS}, "demo_available": True}
+    return {"ok": True, "ready": getattr(app.state, "engines_ready", False), "engine": engine_status(), "lyrics": lyrics.status(), "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024), "max_audio_seconds": MAX_AUDIO_SECONDS}, "demo_available": True}
 
 
 @app.post("/api/jobs", status_code=202)
