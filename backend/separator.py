@@ -69,11 +69,19 @@ class SAMSeparator:
             return
         from sam_audio import SAMAudio, SAMAudioProcessor
         name = os.getenv("SAM_MODEL", "facebook/sam-audio-base")
-        model = SAMAudio.from_pretrained(name).eval().to(self.device)
+        # No reranking/span prediction: unused auxiliary models exhaust VRAM.
+        model = SAMAudio.from_pretrained(
+            name, visual_ranker=None, text_ranker=None, span_predictor=None,
+        ).eval().to(self.device)
         processor = SAMAudioProcessor.from_pretrained(name)
         if processor.audio_sampling_rate != SAMPLE_RATE:
             raise RuntimeError("SAM Audio 모델의 샘플레이트가 예상과 다릅니다.")
         self.model, self.processor = model, processor
+
+    def warmup(self):
+        # Exercise the actual processor/inference/output contract before serving.
+        self.extract(np.zeros(4 * SAMPLE_RATE, dtype=np.float32), "vocal",
+                     threading.Event(), lambda _: None)
 
     def extract(self, audio: np.ndarray, inst: str, event: threading.Event, progress: Callable[[float], None]) -> np.ndarray:
         import torch
@@ -90,7 +98,8 @@ class SAMSeparator:
             batch = self.processor(audios=[torch.from_numpy(part).unsqueeze(0)], descriptions=[PROMPTS[inst]]).to(self.device)
             with torch.inference_mode():
                 result = self.model.separate(batch, predict_spans=False, reranking_candidates=1)
-            separated = result.target.detach().float().cpu().numpy().reshape(-1)[:len(part)]
+            # SAM returns one variable-length waveform per batch item.
+            separated = result.target[0].detach().float().cpu().numpy().reshape(-1)[:len(part)]
             if len(separated) < len(part) or not np.isfinite(separated).all():
                 raise RuntimeError("SAM Audio returned an invalid waveform")
             weight = np.ones(len(part), dtype=np.float32)
