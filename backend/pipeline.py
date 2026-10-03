@@ -10,6 +10,7 @@ from .config import INSTRUMENTS, LABELS
 from .media import download_youtube, normalize
 from .score import transcribe
 from .editing import generate_score, notation_metadata
+from .errors import processing_error
 from .separator import ENGINE, Cancelled, check_cancel, save_audio, separate_sequential, waveform
 
 logger = logging.getLogger(__name__)
@@ -37,14 +38,8 @@ def fail(job_id: str, error: Exception):
         store.update(job_id, status="cancelled", message="작업을 중단했어요. 완료된 파일은 계속 사용할 수 있어요.")
         return
     logger.exception("Job %s failed", job_id)
-    if isinstance(error, ValueError):
-        message = str(error)
-    elif isinstance(error, ImportError):
-        message = "서버에 처리 엔진의 필수 패키지가 없어요. 서버 설정을 확인해주세요."
-    elif "out of memory" in str(error).lower():
-        message = "GPU 메모리가 부족해요. SAM_CHUNK_SECONDS를 낮추거나 작은 모델로 다시 시도해주세요."
-    else:
-        message = "처리 엔진에서 오류가 발생했어요. 모델 접근 권한과 서버 로그를 확인해주세요."
+    stage = {"preparing": "음원 준비", "separating": "악기 분리", "transcribing": "채보"}.get(job.get("stage"), "음악 처리")
+    message = processing_error(error, stage, job_id)
     store.update(job_id, status="error", error=message, message="작업을 완료하지 못했어요")
 
 
@@ -86,6 +81,10 @@ def run_separation(job_id: str, event: threading.Event, source: Path | None = No
         store.update(job_id, status="separated", progress=100, stage="done", active_instrument=None, residual_url=store.asset_url(job_id, "residual.wav"), message="악기 분리가 끝났어요. 원하는 악기를 듣고 악보를 만들어보세요.")
     except Exception as error:
         fail(job_id, error)
+    finally:
+        # The queue has one worker: all six stems finish (or fail/cancel) before
+        # releasing weights and allocator cache, and the next job cannot race us.
+        ENGINE.offload()
 
 
 def run_demo(job_id: str, event: threading.Event):
@@ -124,9 +123,9 @@ def run_transcription(job_id: str, event: threading.Event, instruments: list[str
                 stem_update(job_id, inst, score_status="ready", score_url=store.asset_url(job_id, f"{inst}.musicxml"), midi_url=store.asset_url(job_id, f"{inst}.mid"), note_count=len(document["notes"]), score_bpm=bpm, score_revision=document["revision"], score_edited=False, score_layout=document["layout"], score_title=document["title"], score_warning="드럼은 온셋·주파수 기반 리듬 초안이에요. 킥·스네어·하이햇 구분을 확인해주세요." if inst == "drums" else "16분음표 기준으로 정리한 자동 채보 초안이에요. 음정·리듬을 확인해주세요.", **notation_metadata(document))
             except Cancelled:
                 raise
-            except Exception:
+            except Exception as error:
                 logger.exception("Transcription failed for %s / %s", job_id, inst)
-                stem_update(job_id, inst, score_status="error", score_error="채보에 실패했어요. 음원은 보존되어 있으니 다시 시도할 수 있어요.")
+                stem_update(job_id, inst, score_status="error", score_error=processing_error(error, f"{LABELS[inst]} 채보", job_id))
         check_cancel(event)
         store.update(job_id, status="completed", stage="done", progress=100, message="채보가 끝났어요. 악보를 확인하고 편한 크기로 조절해보세요.")
     except Exception as error:
@@ -157,7 +156,7 @@ def run_cpu_analysis(job_id, event, kind, previous_status, source="original", la
                      analysis_previous_status=None, analysis_error=None, message="분석 초안을 준비했어요. 확인 후 적용해주세요.")
     except Exception as error:
         logger.exception("CPU analysis %s failed for %s", kind, job_id)
-        message = str(error) if isinstance(error, ValueError) else "분석에 실패했어요. 패키지·모델 다운로드·서버 로그를 확인해주세요. 기존 악보는 보존했어요."
+        message = processing_error(error, "박자 분석" if kind == "beats" else "가사 인식", job_id)
         store.update(job_id, status=previous_status, stage="done", progress=100,
                      analysis_previous_status=None,
                      analysis_error=None if isinstance(error, Cancelled) else message,

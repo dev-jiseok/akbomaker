@@ -116,7 +116,9 @@ def test_recognition_is_reviewable_not_applied_and_failure_preserves_previous_ca
     monkeypatch.setattr(lyrics, "recognize", fail)
     response = client.post(url, json={"source": "original", "replace_candidate": True})
     job = finish(client, response.json())
-    assert job["analysis_error"] == "no vocals" and job["lyric_candidate"] == before and job["status"] == "completed"
+    assert "가사 인식 실패: no vocals" in job["analysis_error"]
+    assert job["id"] in job["analysis_error"]
+    assert job["lyric_candidate"] == before and job["status"] == "completed"
 
 
 def test_all_part_apply_preserves_notes_tab_and_original_with_stale_revision_guards(client):

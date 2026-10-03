@@ -35,7 +35,10 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
     (async () => {
       try {
         const [{ OpenSheetMusicDisplay }, notation] = await Promise.all([
-          import('opensheetmusicdisplay'), xml ? Promise.resolve(xml) : fetch(stem.score_url! + `?v=${stem.score_revision || 0}`, { signal: controller.signal, cache: 'no-store' }).then(async response => {
+          import('opensheetmusicdisplay').catch(error => {
+            console.error('악보 표시 모듈 로딩 실패', error);
+            throw new Error('악보 표시 모듈을 불러오지 못했어요. 서버 업데이트 또는 연결 문제일 수 있어요. 수정 중인 내용을 보관한 뒤 페이지를 새로고침해주세요.');
+          }), xml ? Promise.resolve(xml) : fetch(stem.score_url! + `?v=${stem.score_revision || 0}`, { signal: controller.signal, cache: 'no-store' }).then(async response => {
             if (!response.ok) throw new Error('악보 파일을 가져오지 못했어요.');
             return response.text();
           }),

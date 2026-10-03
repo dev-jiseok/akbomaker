@@ -20,6 +20,8 @@ from backend.separator import Cancelled, chunk_starts, separate_sequential
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Ordinary API tests use mock engines; startup readiness has separate tests.
+    monkeypatch.setenv("AKBO_ALLOW_DEGRADED", "1")
     monkeypatch.setattr(store, "DATA_DIR", tmp_path)
     with TestClient(api.app) as client:
         yield client
@@ -147,6 +149,9 @@ def test_actual_upload_pipeline_and_transcription_contract(client, monkeypatch):
     monkeypatch.setattr(api, "engine_status", lambda: {"available": True, "transcription_available": True})
 
     class TestSeparator:
+        def offload(self):
+            pass
+
         def extract(self, audio, inst, event, progress):
             progress(0.5)
             return audio * 0.15
