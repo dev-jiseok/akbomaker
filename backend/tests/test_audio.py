@@ -149,6 +149,9 @@ def test_actual_upload_pipeline_and_transcription_contract(client, monkeypatch):
     monkeypatch.setattr(api, "engine_status", lambda: {"available": True, "transcription_available": True})
 
     class TestSeparator:
+        def offload(self):
+            pass
+
         def extract(self, audio, inst, event, progress):
             progress(0.5)
             return audio * 0.15

@@ -81,6 +81,10 @@ def run_separation(job_id: str, event: threading.Event, source: Path | None = No
         store.update(job_id, status="separated", progress=100, stage="done", active_instrument=None, residual_url=store.asset_url(job_id, "residual.wav"), message="악기 분리가 끝났어요. 원하는 악기를 듣고 악보를 만들어보세요.")
     except Exception as error:
         fail(job_id, error)
+    finally:
+        # The queue has one worker: all six stems finish (or fail/cancel) before
+        # releasing weights and allocator cache, and the next job cannot race us.
+        ENGINE.offload()
 
 
 def run_demo(job_id: str, event: threading.Event):

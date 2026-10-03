@@ -21,6 +21,7 @@ def engines(monkeypatch, tmp_path):
         ("inference", startup.separator.ENGINE, "warmup"),
         ("pitch", startup.score, "transcription_model"),
         ("whisper", startup.lyrics, "model"),
+        ("offload", startup.separator.ENGINE, "offload"),
     ]:
         mocks[name] = Mock()
         monkeypatch.setattr(owner, attribute, mocks[name])
@@ -45,6 +46,7 @@ def test_failed_engine_initialization_prevents_api_startup(engines, engine):
     with pytest.raises(RuntimeError, match="서버 시작 중단.*model initialization failed"):
         with TestClient(api.app):
             pytest.fail("Failed initialization must prevent startup")
+    engines["offload"].assert_called_once()
 
 
 def test_all_engines_load_before_api_accepts_requests(engines):

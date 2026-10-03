@@ -40,12 +40,16 @@ def prepare_engines():
         ("Basic Pitch ONNX 모델 초기화", score.transcription_model),
         ("Whisper 모델 다운로드·CPU 초기화", lyrics.model),
     ]
-    for label, initialize in steps:
-        logger.info("시작 준비: %s", label)
-        try:
-            initialize()
-        except Exception as error:
-            raise RuntimeError(f"서버 시작 중단 — {label} 실패: {error}") from error
+    try:
+        for label, initialize in steps:
+            logger.info("시작 준비: %s", label)
+            try:
+                initialize()
+            except Exception as error:
+                raise RuntimeError(f"서버 시작 중단 — {label} 실패: {error}") from error
+    finally:
+        separator.ENGINE.offload()
+    logger.info("SAM 모델을 CPU로 이동하고 유휴 GPU 메모리를 반환했습니다.")
     logger.info("필수 엔진 준비 완료. 업로드 요청을 받을 수 있습니다.")
     return True
 

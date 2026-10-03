@@ -1,7 +1,9 @@
 """Official SAM Audio adapter; one inference per instrument per overlapping chunk."""
 import importlib.util
+import gc
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -38,7 +40,7 @@ def engine_status() -> dict:
             from huggingface_hub import get_token
             if not get_token():
                 issues.append("승인된 Hugging Face 계정의 HF_TOKEN을 설정해주세요.")
-    return {"available": not issues, "model": os.getenv("SAM_MODEL", "facebook/sam-audio-base"), "device": device, "issues": issues, "transcription_available": importlib.util.find_spec("basic_pitch") is not None}
+    return {"available": not issues, "model": os.getenv("SAM_MODEL", "facebook/sam-audio-base"), "device": device, "gpu_resident": ENGINE.gpu_resident, "issues": issues, "transcription_available": importlib.util.find_spec("basic_pitch") is not None}
 
 
 def waveform(audio: np.ndarray, count: int = 96) -> list[float]:
@@ -63,20 +65,53 @@ class SAMSeparator:
         self.model = None
         self.processor = None
         self.device = os.getenv("SAM_DEVICE", "cuda")
+        self._on_device = False
+
+    @property
+    def gpu_resident(self):
+        return self._on_device and self.device.startswith("cuda")
 
     def load(self):
-        if self.model is not None:
+        if self._on_device:
             return
-        from sam_audio import SAMAudio, SAMAudioProcessor
-        name = os.getenv("SAM_MODEL", "facebook/sam-audio-base")
-        # No reranking/span prediction: unused auxiliary models exhaust VRAM.
-        model = SAMAudio.from_pretrained(
-            name, visual_ranker=None, text_ranker=None, span_predictor=None,
-        ).eval().to(self.device)
-        processor = SAMAudioProcessor.from_pretrained(name)
-        if processor.audio_sampling_rate != SAMPLE_RATE:
-            raise RuntimeError("SAM Audio 모델의 샘플레이트가 예상과 다릅니다.")
-        self.model, self.processor = model, processor
+        if self.model is None:
+            from sam_audio import SAMAudio, SAMAudioProcessor
+            name = os.getenv("SAM_MODEL", "facebook/sam-audio-base")
+            # No reranking/span prediction: unused auxiliary models exhaust VRAM.
+            model = SAMAudio.from_pretrained(
+                name, visual_ranker=None, text_ranker=None, span_predictor=None,
+            ).eval()
+            processor = SAMAudioProcessor.from_pretrained(name)
+            if processor.audio_sampling_rate != SAMPLE_RATE:
+                raise RuntimeError("SAM Audio 모델의 샘플레이트가 예상과 다릅니다.")
+            self.model, self.processor = model, processor
+        # Keep the CPU copy between jobs; moving back needs no model download.
+        self._move_model(self.device)
+        self._on_device = True
+
+    def _move_model(self, device):
+        import torch
+        with torch.no_grad():
+            self.model.to(device)
+            # SAM's legacy weight_norm keeps computed weights as plain tensor
+            # attributes, outside parameters/buffers handled by Module.to().
+            # Move those too, in both directions, so offload really frees VRAM.
+            for module in self.model.modules():
+                for name, value in list(vars(module).items()):
+                    if isinstance(value, torch.Tensor):
+                        setattr(module, name, value.to(device))
+
+    def offload(self):
+        """Called after startup or by the single job worker, never by an idle timer."""
+        if self.model is not None and self.device.startswith("cuda"):
+            # Also handles a partially completed .to(cuda) after allocation failure.
+            self._move_model("cpu")
+            self._on_device = False
+        torch = sys.modules.get("torch")
+        if torch is not None and self.device.startswith("cuda") and torch.cuda.is_initialized():
+            gc.collect()
+            with torch.cuda.device(self.device):
+                torch.cuda.empty_cache()
 
     def warmup(self):
         # Exercise the actual processor/inference/output contract before serving.
