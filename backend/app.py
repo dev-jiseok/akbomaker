@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from .frontend import FrontendFiles
 from pydantic import BaseModel, Field
 from uuid import uuid4
 
@@ -578,4 +578,4 @@ def archive(job_id: str):
 # Built frontend can be served by the same API origin on a GPU host.
 dist = ROOT / "dist"
 if dist.is_dir():
-    app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    app.mount("/", FrontendFiles(directory=dist, html=True), name="web")
