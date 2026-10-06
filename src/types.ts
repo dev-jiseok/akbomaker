@@ -62,6 +62,7 @@ export type Job = {
 };
 export type Health = {
   ok: boolean;
+  ready?: boolean;
   engine: { available: boolean; model: string; device: string; issues: string[]; transcription_available: boolean };
   limits: { max_upload_mb: number; max_audio_seconds: number };
   lyrics?: { available: boolean; model: string; device: string; compute_type: string };

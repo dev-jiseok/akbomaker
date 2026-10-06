@@ -1,0 +1,16 @@
+# Full Linux NVIDIA server environment. Regenerate the lock with:
+# GIT_LFS_SKIP_SMUDGE=1 uv pip compile backend/requirements-server.in --python-version 3.11 --torch-backend cu128 -o backend/requirements-server.lock
+-r requirements-ml.txt
+-r requirements-asr.txt
+# Keep the CUDA stack compatible (https://github.com/meta-pytorch/torchcodec).
+torch==2.8.0
+torchaudio==2.8.0
+torchvision==0.23.0
+torchcodec==0.7.0
+# SAM Audio uses the Transformers 4.x APIs.
+transformers>=4.54,<5
+# PyPI's audiotools 0.7.2 pins protobuf<3.20, incompatible with Basic Pitch's
+# Python 3.11 dependencies. Upstream 0.7.4 fixes that constraint.
+descript-audiotools @ git+https://github.com/descriptinc/audiotools.git@master
+# Basic Pitch's resampy<0.4.3 imports pkg_resources at runtime.
+setuptools<81

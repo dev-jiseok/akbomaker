@@ -22,20 +22,44 @@
 - 이 브라우저의 최근 20개 프로젝트, 모바일 화면, 키보드 조작, 오류 및 엔진 연결 상태 안내.
 - 직접 합성한 원본 샘플 음원과 실제 WAV·MIDI·MusicXML 파일로 작업실 체험. **샘플은 SAM Audio 분리 결과가 아닙니다.**
 
-## 로컬 실행
+## 서버 실행 (권장)
+
+nvm, uv, Git, FFmpeg가 설치된 Linux NVIDIA 서버에서 다음 한 줄로 실행합니다.
+
+```sh
+./start.sh --host 192.168.100.15 --port 8000
+```
+
+접속 주소는 http://192.168.100.15:8000 입니다. 다른 서버에서는 해당 서버 주소를 지정하세요. 인자를 생략하면 127.0.0.1:8000에 바인딩합니다.
+
+스크립트가 nvm으로 Node 22를 선택/설치하고, uv로 Python 3.11과 `.venv`를 준비합니다. SAM Audio, CUDA PyTorch, Basic Pitch, Whisper를 포함한 고정 의존성을 설치한 뒤 프런트엔드를 빌드하고 웹앱과 API를 함께 실행합니다. 설치된 Python 패키지와 모델 캐시는 다음 실행에서도 재사용하며 프런트엔드는 매번 새로 빌드합니다. `./start.sh --setup-only`는 패키지 설치와 빌드까지만 수행합니다.
+
+**기본 실행은 모든 엔진이 준비되어야 성공합니다.** API가 요청을 받기 전에 FFmpeg, 저장소 쓰기 권한, GPU 연산, TorchCodec, SAM Audio 모델, Basic Pitch ONNX 모델, Whisper 모델을 확인·초기화합니다. 첫 실행 때 모델을 다운로드하며, 다운로드/권한/초기화 실패는 단계와 원인을 터미널에 표시하고 서버 시작을 중단합니다. 업로드 후 발생하는 오류도 처리 단계·원인·서버 로그에서 찾을 작업 번호를 표시합니다.
+
+모델 접근 승인은 자동화할 수 없습니다. [SAM Audio 모델](https://huggingface.co/facebook/sam-audio-base)의 접근 승인을 받은 계정으로 인증하거나 `.env`에 `HF_TOKEN`을 설정하세요. 초기화 중 추가 모델의 접근 승인이 요구되면 로그에 표시된 모델에도 권한이 필요합니다. 토큰은 Git이나 프런트엔드에 넣지 않습니다. nvm/uv, NVIDIA 드라이버, OS 패키지는 사전 설치 대상입니다. Ubuntu의 미디어 패키지: `sudo apt-get install git ffmpeg libsndfile1`.
+
+서버 잠금 파일은 Python 3.11/Linux NVIDIA용이며 PyTorch 2.8 / CUDA 12.8 / TorchCodec 0.7 조합을 사용합니다. CUDA 12.8을 지원하는 드라이버가 필요합니다. [TorchCodec 호환표](https://github.com/meta-pytorch/torchcodec)에 맞춰 함께 갱신하세요. Basic Pitch와 SAM의 protobuf 제약 충돌을 해결한 upstream audiotools와 resampy의 `pkg_resources`에 필요한 setuptools 버전도 고정했습니다. 잠금 파일 갱신 명령:
+
+```sh
+GIT_LFS_SKIP_SMUDGE=1 uv pip compile backend/requirements-server.in --python-version 3.11 --torch-backend cu128 -o backend/requirements-server.lock
+```
+
+## 샘플·개발 실행 (엔진 준비 검사 명시적 생략)
 
 Node 22 이상, Python 3.11, FFmpeg가 필요합니다. macOS는 `brew install ffmpeg`, Ubuntu는 `sudo apt-get install ffmpeg libsndfile1`로 설치할 수 있습니다.
 
 ```sh
+source "$HOME/.nvm/nvm.sh"
+nvm use
 npm ci
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements-dev.txt
+uv venv --python 3.11
+uv pip install -r backend/requirements-dev.txt
 ```
 
 두 터미널에서 각각 실행합니다.
 
 ```sh
-.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+AKBO_ALLOW_DEGRADED=1 uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
 ```sh
@@ -44,7 +68,7 @@ npm run dev
 
 웹앱: http://127.0.0.1:5173 · API 문서: http://127.0.0.1:8000/docs
 
-ML 패키지가 없는 환경에서도 샘플 작업실은 동작합니다. 실제 분리는 사용할 수 없는 상태로 표시되며, 샘플이나 원본 음원을 분리된 음원으로 위장하지 않습니다.
+개발용 `AKBO_ALLOW_DEGRADED=1`을 명시하면 ML 패키지 없이 샘플 작업실을 실행할 수 있습니다. 실제 분리는 사용할 수 없는 상태로 표시되며, 샘플이나 원본 음원을 분리된 음원으로 위장하지 않습니다. 일반 실행에서는 이 옵션을 설정하지 마세요.
 
 ## GPU 없는 원본 분석과 가사 인식
 
@@ -53,7 +77,7 @@ ML 패키지가 없는 환경에서도 샘플 작업실은 동작합니다. 실�
 가사 자동 인식용 선택 패키지는 다음과 같이 설치합니다.
 
 ```sh
-.venv/bin/pip install -r backend/requirements-asr.txt
+uv pip install -r backend/requirements-asr.txt
 ```
 
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)의 다국어 `base` 모델을 CPU INT8로 실행합니다. `.env`의 `LYRICS_MODEL`로 모델을 선택하며, 첫 실행 때 모델을 `.data/models/whisper/`에 다운로드합니다. 이후 인식은 로컬에서 수행하고 업로드한 음원은 ASR 서비스로 전송하지 않습니다. `/api/health`의 `lyrics.available`은 패키지 존재 여부이지 모델 다운로드나 노래 인식 품질의 보증이 아닙니다.
@@ -66,10 +90,10 @@ ML 패키지가 없는 환경에서도 샘플 작업실은 동작합니다. 실�
 
 ## 실제 SAM Audio 엔진 연결
 
-NVIDIA CUDA GPU가 있는 Python 3.11 서버에 이 프로젝트를 실행하세요. PyTorch·Torchaudio·TorchCodec은 서로 호환되는 CUDA 버전으로 설치해야 합니다. [SAM Audio 공식 설치 안내](https://github.com/facebookresearch/sam-audio)와 [TorchCodec 호환표](https://github.com/pytorch/torchcodec)를 따라 서버 환경을 먼저 준비하세요.
+권장 서버 실행 스크립트는 SAM Audio와 호환 CUDA 패키지를 자동 설치합니다. 환경만 수동으로 준비하려면 Python 3.11 `.venv`에서 다음을 실행하세요. [SAM Audio 공식 설치 안내](https://github.com/facebookresearch/sam-audio)도 참고하세요.
 
 ```sh
-.venv/bin/pip install -r backend/requirements-ml.txt
+GIT_LFS_SKIP_SMUDGE=1 uv pip install --torch-backend cu128 -r backend/requirements-server.lock
 ```
 
 [사용할 Hugging Face 모델](https://huggingface.co/facebook/sam-audio-base)에 접근을 요청해 승인받고, 해당 서버에서 `hf auth login`으로 인증하거나 `.env`에 `HF_TOKEN`을 설정하세요. `.env.example`의 나머지 설정도 사용할 수 있습니다. 토큰은 백엔드에서만 읽고 프런트엔드나 Git에 포함하지 않습니다.
@@ -77,12 +101,22 @@ NVIDIA CUDA GPU가 있는 Python 3.11 서버에 이 프로젝트를 실행하세
 ```dotenv
 SAM_MODEL=facebook/sam-audio-base
 SAM_DEVICE=cuda
+SAM_MIN_FREE_GB=12
+SAM_MAX_GPU_UTILIZATION=10
 SAM_CHUNK_SECONDS=20
 MAX_AUDIO_SECONDS=600
 MAX_UPLOAD_MB=200
 ```
 
-모델 경로를 `SAM_MODEL`로 지정하면 로컬 체크포인트도 사용할 수 있습니다. 첫 실제 작업은 모델 다운로드와 초기화 때문에 오래 걸릴 수 있습니다. GPU 메모리가 부족하면 구간 길이를 줄이거나 작은 SAM 모델을 선택하세요. 모델·패키지·GPU·인증 상태는 `/api/health`와 화면의 연결 상태에서 확인합니다. 여기서 '사용 가능'은 실행 전제 조건의 확인이며, 모델 다운로드·접근 승인·실제 추론 성공을 보증하지는 않습니다.
+모델 경로를 `SAM_MODEL`로 지정하면 로컬 체크포인트도 사용할 수 있습니다. 일반 서버 실행은 모델 다운로드와 초기화가 끝나야 요청을 받습니다. GPU 메모리가 부족하면 구간 길이를 줄이거나 작은 SAM 모델을 선택하세요. 시작 검사는 긴 실제 음원의 메모리 사용량이나 분리 품질까지 보증하지 않습니다. 모델·패키지·GPU·인증 상태는 `/api/health`와 화면의 연결 상태에서도 확인할 수 있습니다.
+
+`SAM_DEVICE=cuda` 또는 `auto`는 각 분리 작업 실행 직전에 `nvidia-smi`로 GPU 상태를 조회합니다. 기본적으로 사용률 10% 이하이고 여유 메모리 12 GiB 이상인 GPU 중 가장 여유 메모리가 많은 장치를 선택합니다. 위 환경변수로 기준을 조절할 수 있으며, 큰 모델에는 더 높은 메모리 기준이 필요합니다. `CUDA_VISIBLE_DEVICES`로 제한하거나 순서를 바꿔도 UUID로 장치를 매칭합니다. `SAM_DEVICE=cuda:1`처럼 번호를 지정하면 해당 CUDA 장치에 고정합니다.
+
+한 작업의 여섯 악기는 같은 GPU에서 처리하고, 다음 작업에서 다시 선택합니다. 조건을 만족하는 GPU가 없으면 작업에 재시도 안내를 표시하며 자동 대기하지 않습니다. 시작 검사에서도 GPU를 선택하므로 모두 사용 중이면 서버 시작이 중단됩니다. 선택한 GPU는 서버 로그와 `/api/health`의 `engine.selected_device`에서 확인할 수 있습니다(유휴 시 `null`). 사용량 조회는 다른 사용자의 GPU 예약을 보장하지 않으므로, 선택 후 다른 프로세스가 메모리를 할당하면 작업이 실패할 수 있습니다.
+
+이 앱은 텍스트 프롬프트·후보 1개·구간 예측 비활성 설정으로 분리하므로 ImageBind/CLAP/Judge 재평가 모델과 구간 예측 모델을 로드하지 않습니다. 시작 시 4초 무음으로 실제 SAM 분리를 수행해 처리기·추론·파형 반환까지 확인합니다. 이는 음악 분리 품질 평가가 아니며, 여러 GPU에 모델을 자동 분산하지 않습니다.
+
+시작 검사와 각 분리 작업이 끝나면 SAM 모델을 CPU RAM으로 옮기고 CUDA 할당 캐시를 반환합니다. 실패·취소 때도 같은 정리를 수행합니다. 다음 분리 요청에서는 CPU에 보관한 모델을 GPU로 다시 옮기므로 모델 다운로드는 반복하지 않지만 전송 시간이 추가됩니다. 여섯 악기 분리 도중에는 모델을 유지하며 단일 작업 큐에서 작업 종료 후에만 해제합니다. 유휴 상태에서도 CUDA 실행 컨텍스트·라이브러리의 소량 메모리는 남을 수 있습니다. `/api/health`의 `engine.gpu_resident`는 현재 SAM 모델의 GPU 상주 여부이며, `ready`는 시작 검사를 통과했는지 표시합니다.
 
 순차 분리의 핵심은 다음과 같습니다. `extract` 결과는 한 번만 계산합니다. 48kHz 모노 부동소수점 WAV로 중간 결과를 저장하여 단계별 클리핑을 피합니다.
 
@@ -167,7 +201,7 @@ npm run test:api
 
 테스트는 입력 URL·크기 제한, 순차 추출 호출 수, 소리 합산 보존, 구간 끝 커버리지, 중단, MusicXML 마디 길이·타이·타악기, MIDI, 실제 샘플 파일·오디오 범위 요청·ZIP, 파일 업로드와 API 채보 연결을 확인합니다. 편집 테스트는 수정본 저장과 원본 보존, 미리보기의 비파괴성, MIDI/XML 반영, 저장 충돌, 잘못된 음표 입력, 드럼 성부별 마디 길이, 기존 프로젝트 변환을 확인합니다. GPU 없는 CI의 분리·채보 통합 테스트에서는 모델만 대체합니다. **SAM Audio의 실제 추론·품질은 승인된 모델과 CUDA 서버에서 별도로 검증해야 합니다.**
 
-GPU·모델 승인이 준비되면 명시적으로 실제 통합 스모크 테스트를 실행할 수 있습니다. 지금은 실행하지 않았고 일반 테스트/CI에서는 건너뜁니다. 첫 실행에 모델 다운로드가 발생할 수 있습니다.
+GPU·모델 승인이 준비되면 명시적으로 실제 통합 스모크 테스트를 실행할 수 있습니다. RTX 3090 24GB에서 SAM Audio base의 실제 여섯 단계 순차 분리·WAV 저장·합산 보존 테스트를 통과했습니다. 일반 테스트/CI에서는 건너뛰며 첫 실행에 모델 다운로드가 발생할 수 있습니다.
 
 ```sh
 RUN_SAM_GPU_TESTS=1 .venv/bin/python -m pytest backend/tests/test_gpu_integration.py -v
@@ -185,22 +219,23 @@ CPU 분석 테스트는 실제 클릭 음원 BPM 추정/무음 거절, 분석 �
 
 ## 합의한 여섯 개발 과제 · 진행 중
 
-여섯 항목 전체가 개발 범위입니다. 아래는 완료 선언이 아니라 현재 단계와 남은 작업입니다. GPU 확보·Hugging Face SAM 모델 승인·실제 CUDA 추론은 마지막 검증 단계로 미룹니다.
+여섯 항목 전체가 개발 범위입니다. 아래는 완료 선언이 아니라 현재 단계와 남은 작업입니다. 승인된 SAM Audio base와 RTX 3090에서 합성 음원의 실제 CUDA 추론 연결은 확인했으며, 실제 곡의 분리·채보 품질 검증은 남아 있습니다.
 
 1. TAB: 기본 순서·튜닝/카포·자동 운지·뮤트/단순 벤딩·일괄 수정 구현. 다음은 슬라이드·해머링/풀링·프리벤드/릴리스·운지 표시 QA.
 2. 기존 악보: 제한된 MusicXML/XML/MXL 가져오기 구현. 다음은 보이스·조표/이명동음·현재 미지원 표기의 보존 범위 확대. PDF/이미지 OMR은 별도 후속 기능.
 3. 완성형 기보: 기본 연주 표시·박자 선택(2/4·3/4·4/4·6/8·9/8·12/8)·마디별 변박·점음표 입력 구현. 다음은 잇단음표 시간 모델, 못갖춘마디, 반복/괄호, 다이내믹·코드, 오선 직접 입력.
 4. 합주 재생: 합성음 마디 범위·속도/반복·원본/분리 음원 마디 강조 구현. 다음은 음표 커서·템포 지도 기반 정밀 동기화·사운드폰트.
-5. 채보 품질: CPU BPM/가사·Basic Pitch 기본 검증 구현. 다음은 실제 곡 기준 가사/단어 시간·드럼 세부 분류·피아노 양손·운지 교정 검증. SAM 통합 코드는 있지만 실제 모델 실행 성공/품질은 GPU·승인 이후 확인.
+5. 채보 품질: CPU BPM/가사·Basic Pitch 기본 검증과 실제 SAM CUDA 통합 스모크 테스트 통과. 다음은 실제 곡 기준 분리 품질·가사/단어 시간·드럼 세부 분류·피아노 양손·운지 교정 검증.
 6. 가독성/출력: A4·스타일·2/4마디·드럼 빔·수동 줄/페이지 시작 구현. 다음은 복잡한 실제 곡의 가사/주법 겹침 QA·마디 폭·가사 여백 세부 조절.
 
 공개 서비스의 인증·사용자별 저장소·작업 큐/재시도·보관 정책·배포/모니터링은 별도 운영 확장입니다.
 
 ## 서버 배치
 
+재빌드 시 기존 `dist/assets/` 파일을 보존해 이미 열린 탭이 이전 버전의 악보 렌더러를 계속 불러올 수 있게 합니다. HTML은 `Cache-Control: no-cache`로 재검증합니다. 이전 배포에서 이미 삭제된 파일을 요청하는 탭은 편집 내용을 보관한 뒤 새로고침해야 합니다. 과거 자산을 정리할 때는 기존 탭의 작업이 종료된 유지보수 시점에 수행하세요.
+
 ```sh
-npm run build
-.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+./start.sh --host 127.0.0.1 --port 8000
 ```
 
 빌드한 `dist/`가 있으면 API가 프런트엔드도 같은 출처로 제공합니다. 기본 개발 서버는 로컬에만 바인딩합니다. 이 버전은 개인 작업실용이며 계정 인증·사용자별 권한 분리를 포함하지 않습니다. 공개 서비스로 운영하려면 인증, 사용자별 저장소, 요청 제한, 보관 정책, HTTPS 프록시, GPU 작업 큐를 추가해야 합니다. `uvicorn --workers 1`로 실행해야 단일 모델·작업 큐·파일 저장소가 일관되게 동작합니다.
