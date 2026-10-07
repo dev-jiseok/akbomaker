@@ -2,7 +2,7 @@ import type { Job } from './types';
 
 async function readResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : '요청을 완료하지 못했어요. 잠시 뒤 다시 시도해주세요.');
+  if (!response.ok) throw Object.assign(new Error(typeof body.detail === 'string' ? body.detail : '요청을 완료하지 못했어요. 잠시 뒤 다시 시도해주세요.'), { status: response.status });
   return body as T;
 }
 

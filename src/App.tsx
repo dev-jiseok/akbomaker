@@ -8,7 +8,7 @@ import Workspace from './components/Workspace';
 import ScoreImport from './components/ScoreImport';
 import SeparationOptions from './components/SeparationOptions';
 
-type View = 'home' | 'projects' | 'guide';
+type View = 'home' | 'projects' | 'guide' | 'score-style';
 const names = ['보컬', '베이스', '드럼', '신디사이저', '기타', '피아노'];
 
 export default function App() {
@@ -32,9 +32,8 @@ export default function App() {
   const [projects, setProjects] = useState<RecentProject[]>(recentProjects);
   const [pollError, setPollError] = useState(false);
   const [scoreDirty, setScoreDirty] = useState(false);
-  const activeJobRef = useRef(job);
   const scoreDirtyRef = useRef(scoreDirty);
-  activeJobRef.current = job;
+  const acceptedHash = useRef(location.hash);
   scoreDirtyRef.current = scoreDirty;
   const fileInput = useRef<HTMLInputElement>(null);
   const abortUpload = useRef<AbortController | null>(null);
@@ -46,6 +45,7 @@ export default function App() {
     setProjects(recentProjects());
     setView('home');
     history.replaceState(null, '', `#project=${next.id}`);
+    acceptedHash.current = `#project=${next.id}`;
   }, []);
 
   const checkHealth = useCallback(async () => {
@@ -62,13 +62,13 @@ export default function App() {
       const expected = location.hash;
       const id = expected.match(/^#project=([a-f0-9]{32})$/)?.[1];
       // Hash/history navigation must obey the same unsaved-work guard as menus.
-      const active = activeJobRef.current;
-      if (active && id !== active.id && scoreDirtyRef.current
+      if (expected !== acceptedHash.current && scoreDirtyRef.current
           && !window.confirm('저장하지 않은 악보·가사·검수 변경사항이 있어요. 이동하면 입력 중인 내용이 사라질 수 있습니다. 계속할까요?')) {
-        history.replaceState(null, '', `#project=${active.id}`);
+        history.replaceState(null, '', acceptedHash.current || location.pathname);
         return;
       }
-      if (!id) { setJob(null); return; }
+      acceptedHash.current = expected;
+      if (!id) { setJob(null); setView(expected === '#score-style' ? 'score-style' : 'home'); return; }
       controller = new AbortController();
       request<Job>(`/api/jobs/${id}`, { signal: controller.signal }).then(next => {
         if (location.hash === expected) acceptJob(next);
@@ -122,7 +122,8 @@ export default function App() {
     setJob(null);
     setPollError(false);
     setSidebarOpen(false);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', next === 'score-style' ? '#score-style' : location.pathname);
+    acceptedHash.current = location.hash;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
   function canLeaveScore() { return !scoreDirty || window.confirm('저장하지 않은 악보·가사·검수 변경사항이 있어요. 먼저 저장하는 것을 권장해요. 입력 중인 내용이 사라질 수 있는데 이 화면을 나갈까요?'); }
@@ -175,14 +176,14 @@ export default function App() {
   }
   const engineReady = !!health?.engine.available;
   const recent = projects.slice(0, 3);
-  const heading = view === 'projects' ? '내 프로젝트' : view === 'guide' ? '이용 안내' : '음악 작업실';
+  const heading = job?.score_preserved || view === 'score-style' ? '기존 악보 스타일 변환' : view === 'projects' ? '내 프로젝트' : view === 'guide' ? '이용 안내' : '음악 작업실';
 
   return <div className="app-shell">
     {sidebarOpen && <button className="sidebar-backdrop" aria-label="메뉴 닫기" onClick={() => setSidebarOpen(false)} />}
     <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
       <button className="brand" onClick={() => navigate('home')}><span className="brand-symbol"><Music2 size={23} strokeWidth={1.8} /></span><span>악보 메이커<small>AKBO MAKER</small></span></button>
       <div className="sidebar-section-label">MY LITTLE STUDIO</div>
-      <nav aria-label="주 메뉴"><button className={view === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('home')}><LayoutDashboard size={19} /> 음악 작업실 <span className="nav-active-dot" /></button><button className={view === 'projects' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('projects')}><FolderHeart size={19} /> 내 프로젝트 {projects.length > 0 && <span className="nav-count">{projects.length}</span>}</button><button className={view === 'guide' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('guide')}><CircleHelp size={19} /> 이용 안내</button></nav>
+      <nav aria-label="주 메뉴"><button className={view === 'home' && !job?.score_preserved ? 'nav-item active' : 'nav-item'} onClick={() => navigate('home')}><LayoutDashboard size={19} /> 음악 작업실 <span className="nav-active-dot" /></button><button className={view === 'score-style' || job?.score_preserved ? 'nav-item active' : 'nav-item'} onClick={() => navigate('score-style')}><FileMusic size={19} /> 악보 스타일 변환</button><button className={view === 'projects' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('projects')}><FolderHeart size={19} /> 내 프로젝트 {projects.length > 0 && <span className="nav-count">{projects.length}</span>}</button><button className={view === 'guide' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('guide')}><CircleHelp size={19} /> 이용 안내</button></nav>
       <div className="sidebar-line" />
       <div className="sidebar-section-label">RECENT PROJECTS</div>
       <div className="sidebar-recents">{recent.length ? recent.map(project => <button key={project.id} onClick={() => void openProject(project.id)} disabled={loading}><span className="recent-icon"><Music2 size={15} /></span><span>{project.title}<small>{project.demo ? '샘플 프로젝트' : '음악 프로젝트'}</small></span></button>) : <p>첫 번째 음악을 가져오면<br />여기에 차곡차곡 쌓여요.</p>}</div>
@@ -194,7 +195,7 @@ export default function App() {
       <header className="topbar"><div><button className="icon-button mobile-menu" aria-label="메뉴 열기" onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><span className="topbar-studio">Workspace</span><ChevronRight size={13} /><span>{heading}</span></div><div><button className={`engine-badge ${engineReady ? 'ready' : ''}`} onClick={() => setEngineModal(true)}><i />{checking && !health ? '연결 확인 중' : engineReady ? 'SAM Audio 연결됨' : health ? '샘플 체험 가능' : '서버 연결 필요'}<ChevronRight size={12} /></button><button className="help-button icon-button" aria-label="이용 안내" onClick={() => navigate('guide')}><CircleHelp size={19} /></button></div></header>
       <main>
         {pollError && <div className="inline-alert" role="status"><Radio size={18} /><span>서버 연결이 잠시 끊겼어요. 자동으로 다시 연결하고 있어요.</span></div>}
-        {job ? <Workspace key={job.id} job={job} health={health} onJob={acceptJob} onNew={() => navigate('home')} onError={setToast} onEditorDirty={setScoreDirty} /> : view === 'projects' ? <Projects projects={projects} loading={loading} onOpen={openProject} onNew={() => navigate('home')} /> : view === 'guide' ? <Guide onDemo={demo} loading={loading} /> : <>
+        {job ? <Workspace key={job.id} job={job} health={health} onJob={acceptJob} onNew={() => navigate(job.score_preserved ? 'score-style' : 'home')} onError={setToast} onEditorDirty={setScoreDirty} /> : view === 'score-style' ? <section className="score-style-page"><span className="eyebrow">SAME MUSIC, YOUR STYLE</span><h1>있는 악보를, 읽기 편하게.</h1><p>음원에서 새로 채보하지 않아요. 기존 악보를 가져와 스타일을 바꾸고, 필요한 부분만 수정해서 출력하세요.</p><ol className="score-style-steps" aria-label="악보 스타일 변환 순서"><li>악보 업로드</li><li>스타일 변경·미리보기</li><li>필요한 부분만 수정</li><li>출력·저장</li></ol><ScoreImport expanded disabled={loading || !health} onImported={acceptJob} onDirty={setScoreDirty} /><p className="editor-help">기존 음악 작업실의 음원 분리·자동 채보와 별도 기능입니다. 기존 음악 프로젝트나 악보를 덮어쓰지 않습니다.</p></section> : view === 'projects' ? <Projects projects={projects} loading={loading} onOpen={openProject} onNew={() => navigate('home')} /> : view === 'guide' ? <Guide onDemo={demo} loading={loading} /> : <>
           <section className="hero"><div className="hero-copy"><div className="hero-eyebrow"><span /> YOUR MUSIC, YOUR WAY</div><h1>좋아하는 음악을,<br /><span>나만의 악보로.</span><span className="title-star">✳</span></h1><p>음악 속 악기를 하나씩 꺼내고,<br />내가 읽기 편한 악보로 만들어보세요.</p><button className="hero-demo" onClick={() => void demo()} disabled={loading}>{loading && uploadProgress === null ? <LoaderCircle size={15} className="spin" /> : <Headphones size={15} />} 샘플 작업실 둘러보기 <ArrowRight size={15} /></button><div className="hero-footnote">조금 더 자유롭게, 조금 더 나답게.</div></div><StudioArtwork /></section>
           <div className="creation-layout"><section className="card import-card"><div className="panel-heading"><div><span className="eyebrow">LET'S GET STARTED</span><h2>어떤 음악을 가져올까요?</h2></div><span className="step-label">STEP 01</span></div>
             <div className="source-tabs" role="tablist" aria-label="음악 가져오기 방식"><button role="tab" aria-selected={source === 'file'} aria-controls="source-panel" id="file-tab" className={source === 'file' ? 'active' : ''} onClick={() => { setSource('file'); setFormError(''); }} disabled={loading}><UploadCloud size={16} /> 파일 업로드</button><button role="tab" aria-selected={source === 'youtube'} aria-controls="source-panel" id="youtube-tab" className={source === 'youtube' ? 'active' : ''} onClick={() => { setSource('youtube'); setFormError(''); }} disabled={loading}><Youtube size={17} /> YouTube 링크</button></div>
@@ -214,7 +215,7 @@ export default function App() {
             <div className="upload-footnote"><ShieldCheck size={13} /><span>직접 제작했거나 사용할 권한이 있는 음악을 가져와주세요.</span></div>
           </section><aside className="workflow-card"><span className="eyebrow">FROM SOUND TO SHEET</span><h2>음악이 악보가 되는 순간</h2><p className="workflow-intro">복잡한 과정은 덜고,<br />음악에 더 가까이.</p><div className="workflow-steps"><div><span className="workflow-icon"><UploadCloud size={20} /></span><div><small>01 · BRING YOUR MUSIC</small><h3>음악 가져오기</h3><p>파일이나 YouTube 링크 하나면 충분해요.</p></div></div><div><span className="workflow-icon"><AudioLines size={20} /></span><div><small>02 · FIND EACH SOUND</small><h3>악기별로 나누기</h3><p>여섯 악기를 분리하고 따로 들어보세요.</p></div></div><div><span className="workflow-icon"><FileMusic size={20} /></span><div><small>03 · MAKE IT YOURS</small><h3>나에게 맞는 악보 만들기</h3><p>악보를 읽기 편하게 맞추고 저장하세요.</p></div></div></div><div className="workflow-footer"><span>♩</span><p>완벽한 악보보다,<br /><strong>내가 읽기 편한 악보.</strong></p></div></aside></div>
           <section className="recent-section"><div className="recent-heading"><h2>최근 작업한 음악 <span>{projects.length ? String(projects.length).padStart(2, '0') : '00'}</span></h2><button className="text-button" onClick={() => navigate('projects')}>모든 프로젝트 <ArrowUpRight size={14} /></button></div>{recent.length ? <div className="project-grid">{recent.map(project => <ProjectCard key={project.id} project={project} onOpen={openProject} disabled={loading} />)}</div> : <div className="empty-recent"><span className="empty-recent-icon"><Music2 size={23} strokeWidth={1.4} /></span><div><strong>아직은 빈 작업실이에요</strong><p>첫 음악을 가져오거나, 샘플로 가볍게 시작해보세요.</p></div><button className="text-button" disabled={loading} onClick={() => void demo()}>샘플 열어보기 <ArrowRight size={15} /></button></div>}</section>
-          <ScoreImport disabled={loading || !health} onImported={acceptJob} />
+          <ScoreImport disabled={loading || !health} onImported={acceptJob} onDirty={setScoreDirty} />
           <footer className="page-footer"><span>AKBO MAKER <i /> A LITTLE MORE YOU.</span><span>음악을 듣는 또 하나의 방법.</span></footer>
         </>}
       </main>

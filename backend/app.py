@@ -25,6 +25,10 @@ from .separator import engine_status
 from .drum_worker import worker_status
 from . import lyrics
 from . import score_import
+from . import score_omr
+from . import source_projects
+from . import tab_review_projects
+from .score_preservation import restyle_musicxml
 from . import transcription_review
 from . import review_cases
 from .startup import prepare_engines
@@ -41,9 +45,13 @@ async def lifespan(app):
     yield
     for event in list(EVENTS.values()):
         event.set()
+    score_omr.shutdown()
 
 
 app = FastAPI(title="Akbo Maker", lifespan=lifespan)
+app.include_router(score_omr.router)
+app.include_router(source_projects.router)
+app.include_router(tab_review_projects.router)
 
 
 class UploadSizeLimit:
@@ -53,10 +61,13 @@ class UploadSizeLimit:
 
     async def __call__(self, scope, receive, send):
         path = scope.get("path", "")
-        score_upload = path in {"/api/score-import", "/api/score-import/inspect"} or bool(re.fullmatch(r"/api/jobs/[a-f0-9]{32}/scores/[a-z]+/import-preview", path))
-        if scope["type"] != "http" or scope.get("method") != "POST" or (path != "/api/jobs" and not score_upload):
+        score_upload = path in {"/api/score-import", "/api/score-import/inspect", "/api/score-import/preserve-preview", "/api/source-scores"} or bool(re.fullmatch(r"/api/jobs/[a-f0-9]{32}/scores/[a-z]+/import-preview", path))
+        source_update = bool(re.fullmatch(r"/api/source-scores/[a-f0-9]{32}/(?:edit|layout|history)", path))
+        tab_update = bool(re.fullmatch(r"/api/score-omr/[a-f0-9]{32}/tab-review(?:/(?:import|rhythm-suggestions))?", path))
+        omr_upload = path == "/api/score-omr"
+        if scope["type"] != "http" or scope.get("method") not in {"POST", "PUT"} or (path != "/api/jobs" and not score_upload and not omr_upload and not source_update and not tab_update):
             return await self.app(scope, receive, send)
-        limit = (score_import.UPLOAD_LIMIT if score_upload else MAX_UPLOAD_BYTES) + 1024 * 1024
+        limit = tab_review_projects.MAX_STATE_BYTES if tab_update else 32 * 1024 if source_update else (score_omr.UPLOAD_LIMIT if omr_upload else score_import.UPLOAD_LIMIT if score_upload else MAX_UPLOAD_BYTES) + 1024 * 1024
         headers = dict(scope.get("headers", []))
         try:
             too_large = int(headers.get(b"content-length", b"0")) > limit
@@ -179,6 +190,8 @@ def create_demo():
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     job = valid_job(job_id)
+    if job.get("score_preserved"):
+        return source_projects.project(job_id)
     # Read-only compatibility for projects created before offset metadata existed.
     # Do not rewrite the user's score, revision, or job merely by viewing it.
     for stem in job["stems"]:
@@ -216,13 +229,25 @@ async def inspect_score_file(file: UploadFile = File(...)):
         raise import_error(error) from None
 
 
-def create_imported_project(data, filename, part_id, inst):
+@app.post("/api/score-import/preserve-preview")
+async def preserve_score_preview(file: UploadFile = File(...), part_id: str = Form(..., max_length=80), preset: str = Form(default="practice"), measures_per_line: int = Form(default=4)):
+    data = await read_score_upload(file)
+    try:
+        xml, warnings = await asyncio.to_thread(restyle_musicxml, data, file.filename or "", part_id, preset, measures_per_line)
+        return {"xml": xml.decode("utf-8"), "warnings": warnings, "mode": "layout-only"}
+    except (ValueError, KeyError, TypeError, OverflowError) as error:
+        raise import_error(error) from None
+
+
+def create_imported_project(data, filename, part_id, inst, provenance=None):
     if inst not in INSTRUMENTS:
         raise HTTPException(422, "가져올 악기를 선택해주세요.")
     try:
         doc, source, warnings = score_import.import_document(data, filename, part_id, inst)
     except (ValueError, KeyError, TypeError, OverflowError) as error:
         raise import_error(error) from None
+    if provenance:
+        warnings = [*warnings, *provenance["warnings"]]
     # Validate before creating a job. Invalid XML never creates partial projects.
     with TASK_LOCK, store.LOCK:
         job = store.create(doc["title"], "musicxml")
@@ -240,13 +265,14 @@ def create_imported_project(data, filename, part_id, inst):
                     score_source_url=store.asset_url(job["id"], f"{inst}.source.musicxml"),
                     score_warning=" · ".join(warnings), **notation_metadata(doc))
         return store.update(job["id"], status="completed", stage="done", progress=100, duration=duration, bpm=doc["bpm"],
-                            message="악보를 가져왔어요. 직접 수정에서 연주·스타일을 편집하세요.")
+                            message="악보를 가져왔어요. 직접 수정에서 연주·스타일을 편집하세요.", **({"score_omr": provenance} if provenance else {}))
 
 
 @app.post("/api/score-import", status_code=201)
-async def import_score_project(file: UploadFile = File(...), part_id: str = Form(..., max_length=80), instrument: str = Form(...)):
+async def import_score_project(file: UploadFile = File(...), part_id: str = Form(..., max_length=80), instrument: str = Form(...), omr_id: str | None = Form(default=None, max_length=32), omr_result_id: str | None = Form(default=None, max_length=32)):
     data = await read_score_upload(file)
-    return await asyncio.to_thread(create_imported_project, data, file.filename or "", part_id, instrument)
+    provenance = score_omr.provenance(data, omr_id, omr_result_id)
+    return await asyncio.to_thread(create_imported_project, data, file.filename or "", part_id, instrument, provenance)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -329,6 +355,8 @@ def generation_meters(body, duration):
 
 def score_stem(job_id, inst):
     job = valid_job(job_id)
+    if job.get("score_preserved"):
+        raise HTTPException(409, "원본 유지 악보는 전용 편집기에서 수정해주세요. 격자 변환으로 원본 표기를 덮어쓰지 않습니다.")
     stem = next((s for s in job["stems"] if s["id"] == inst), None)
     if not stem or not stem.get("score_url"):
         raise HTTPException(404, "먼저 악보를 만들어주세요.")
@@ -560,8 +588,9 @@ def preview_score_document(job_id: str, inst: str, body: ScoreEdit):
 
 
 @app.post("/api/jobs/{job_id}/scores/{inst}/import-preview")
-async def preview_imported_score(job_id: str, inst: str, file: UploadFile = File(...), part_id: str = Form(..., max_length=80), base_revision: str = Form(..., max_length=80)):
+async def preview_imported_score(job_id: str, inst: str, file: UploadFile = File(...), part_id: str = Form(..., max_length=80), base_revision: str = Form(..., max_length=80), omr_id: str | None = Form(default=None, max_length=32), omr_result_id: str | None = Form(default=None, max_length=32)):
     data = await read_score_upload(file)
+    provenance = score_omr.provenance(data, omr_id, omr_result_id)
     with TASK_LOCK, store.LOCK:
         if job_id in EVENTS:
             raise HTTPException(409, "현재 작업이 끝나면 악보를 가져와주세요.")
@@ -571,7 +600,7 @@ async def preview_imported_score(job_id: str, inst: str, file: UploadFile = File
             raise HTTPException(409, "다른 화면에서 악보가 변경됐어요. 최신 악보를 다시 열어주세요.")
     try:
         doc, _, warnings = await asyncio.to_thread(score_import.import_document, data, file.filename or "", part_id, inst, current=current)
-        return {"document": doc, "warnings": warnings}
+        return {"document": doc, "warnings": warnings + (provenance["warnings"] if provenance else []), "score_omr": provenance}
     except (ValueError, KeyError, TypeError, OverflowError) as error:
         raise import_error(error) from None
 
@@ -652,6 +681,8 @@ def download(job_id: str, name: str, download: bool = False):
 @app.get("/api/jobs/{job_id}/archive")
 def archive(job_id: str):
     job = valid_job(job_id)
+    if job.get("score_preserved"):
+        return source_projects.archive(job_id)
     if job["status"] in {"queued", "running", "transcribing", "analyzing"}:
         raise HTTPException(409, "처리가 끝나면 전체 파일을 받을 수 있어요.")
     folder = store.directory(job_id)

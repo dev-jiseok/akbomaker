@@ -87,8 +87,13 @@ export type Job = {
   stems: Stem[];
   analysis_only?: boolean;
   separation_strategy?: SeparationStrategy;
+  score_preserved?: { instrument: Instrument; part_id: string; revision: string };
+  score_tab_review?: { id: string; source_sha256: string; coordinate_sha256: string; review_sha256: string;
+    method: 'user-reviewed-pdf-tab'; warnings: string[] };
   separation?: { strategy: SeparationStrategy; input_mode: string; instrument_order: Instrument[];
     accuracy_evaluated: false; stems_may_overlap: boolean; additive_residual: boolean };
+  score_omr?: { id: string; result_id: string; engine: string; source_url: string; result_url: string; raw_result_url?: string; raw_result_sha256?: string; normalizations?: string[];
+    preview_urls: string[]; source_sha256: string; result_sha256: string; warnings: string[] };
   audio_preprocessing?: {
     method: string;
     input_channels: number | null;

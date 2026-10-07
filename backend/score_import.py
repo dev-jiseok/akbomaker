@@ -19,6 +19,34 @@ XML_LIMIT = 8 * 1024 * 1024
 STEPS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 
 
+def unsupported_notation(message):
+    return ValueError(message + " 원본은 변경되지 않았습니다. '원본 표기 유지 · 스타일 미리보기'에서 확인해주세요.")
+
+
+def instrument_declarations(root, part, part_id):
+    """Validate IDs before constructing maps that would hide duplicate entries."""
+    definitions = [info for info in root.findall("part-list/score-part") if info.get("id") == part_id]
+    if len(definitions) > 1:
+        raise unsupported_notation("선택한 파트의 악기 정의가 중복되어 정확히 가져올 수 없어요.")
+    info = definitions[0] if definitions else None
+    score_instruments = info.findall("score-instrument") if info is not None else []
+    score_ids = [item.get("id") for item in score_instruments]
+    defined_ids = set(score_ids)
+    if any(not value for value in score_ids) or len(defined_ids) != len(score_ids):
+        raise unsupported_notation("score-instrument 악기 ID가 비어 있거나 중복되어 정확히 가져올 수 없어요.")
+    midi_instruments = info.findall("midi-instrument") if info is not None else []
+    midi_ids = [item.get("id") for item in midi_instruments]
+    if any(not value for value in midi_ids) or len(set(midi_ids)) != len(midi_ids):
+        raise unsupported_notation("midi-instrument 악기 ID가 비어 있거나 중복되어 정확히 가져올 수 없어요.")
+    if any(value not in defined_ids for value in midi_ids):
+        raise unsupported_notation("MIDI 악기가 정의되지 않은 score-instrument ID를 참조해요.")
+    for note in part.findall(".//note"):
+        references = note.findall("instrument")
+        if len(references) > 1 or any(item.get("id") not in defined_ids for item in references):
+            raise unsupported_notation("음표가 정의되지 않은 score-instrument ID 또는 여러 악기를 참조해요.")
+    return midi_instruments
+
+
 def number(value):
     # Bound decimal parsing before Fraction: XML numeric values must not use
     # huge exponents or integer strings to trigger unbounded big-int work.
@@ -58,7 +86,7 @@ def unpack(data, filename):
         raise ValueError("MusicXML/MXL 파일은 비어 있지 않은 2MB 이하 파일을 선택해주세요.")
     extension = PurePosixPath(filename.lower()).suffix
     if extension not in {".xml", ".musicxml", ".mxl"}:
-        raise ValueError(".musicxml, .xml, .mxl을 지원합니다. PDF·이미지 인식은 아직 지원하지 않아요.")
+        raise ValueError("이 경로는 .musicxml, .xml, .mxl을 지원합니다. PDF·이미지는 별도 악보 인식 탭에서 먼저 인식해주세요.")
     if extension != ".mxl":
         return data, safe_xml(data)
     try:
@@ -91,14 +119,24 @@ def inspect(data, filename):
 def import_document(data, filename, part_id, inst, *, current=None):
     source, root = unpack(data, filename)
     listing = inspect(data, filename)
+    if inst == "drums" and any((node.text or "").strip().casefold().startswith("audiveris") for node in root.findall("identification/encoding/software")):
+        # The OMR pipeline supplies a separately normalized, source-linked copy.
+        # Never silently interpret the raw export's zero-based GM numbers as
+        # standard one-based MusicXML (open hi-hat 46 would become low tom 45).
+        from .audiveris_compat import normalize_export
+        normalized, _ = normalize_export(data, filename)
+        if normalized is not None:
+            raise ValueError("Audiveris 원본의 드럼 MIDI 번호가 MusicXML 표준과 달라요. PDF 인식의 '가져오기용 MusicXML' 결과를 선택해주세요. 원본 표기 유지 미리보기는 사용할 수 있습니다.")
     if part_id not in {p["id"] for p in listing["parts"]}:
         raise ValueError("가져올 파트를 선택해주세요.")
     part = next(p for p in root.findall("part") if p.get("id") == part_id)
+    midi_instruments = instrument_declarations(root, part, part_id)
     unsupported = {
         "time-modification": "셋잇단음표 등 잇단음표", "grace": "꾸밈음", "repeat": "도돌이표",
         "ending": "반복 괄호", "harmony": "코드 기호", "wedge": "크레셴도", "dynamics": "다이내믹",
         "slur": "슬러", "slide": "슬라이드", "glissando": "글리산도", "hammer-on": "해머링", "pull-off": "풀링",
         "pedal": "페달", "ornaments": "장식음", "segno": "세뇨", "coda": "코다",
+        "measure-style": "마디 축약·슬래시·마디 반복 표기", "slash": "슬래시 표기", "measure-repeat": "마디 반복 표기",
     }
     found = [name for tag, name in unsupported.items() if part.find(f".//{tag}") is not None]
     if part.find(".//cue") is not None or part.find(".//swing") is not None:
@@ -111,8 +149,20 @@ def import_document(data, filename, part_id, inst, *, current=None):
         found.append("추가 주법/운지 기호")
     if any(n.tag not in {"words", "rehearsal", "metronome"} for direction in part.findall(".//direction-type") for n in direction):
         found.append("추가 구간 지시 기호")
+    if any(head.get("parentheses", "no") != "no" for head in part.findall(".//notehead")):
+        found.append("고스트 노트 등 괄호 음표머리")
+    if any("dynamics" in node.attrib for node in part.iter()):
+        found.append("음표·재생 다이내믹 속성")
+    for note in part.findall(".//note"):
+        playback = [tie.get("type") for tie in note.findall("tie")]
+        notation = [tie.get("type") for tie in note.findall("notations/tied")]
+        if (any(value not in {"start", "stop"} for value in playback + notation)
+                or len(set(playback)) != len(playback) or len(set(notation)) != len(notation)
+                or notation and set(notation) != set(playback)):
+            found.append("실제 음 길이와 일치하지 않는 타이 표기")
+            break
     if found:
-        raise ValueError("이 편집기에서 아직 보존하지 못하는 표기가 있어 가져오지 않았어요: " + ", ".join(found) + ". 원본은 변경되지 않았습니다.")
+        raise unsupported_notation("이 편집기에서 아직 보존하지 못하는 표기가 있어 가져오지 않았어요: " + ", ".join(found) + ".")
     measures = part.findall("measure")
     if not measures or len(measures) > 600 or any(m.get("implicit") == "yes" for m in measures):
         raise ValueError("못갖춘마디 없는 악보를 최대 600마디까지 가져올 수 있어요.")
@@ -157,8 +207,7 @@ def import_document(data, filename, part_id, inst, *, current=None):
     divisions, transpose, clefs = Fraction(1), {}, {}
     keyboard_staves = set()
     notes, ties, lyrics, annotations = [], {}, {}, []
-    info = next((p for p in root.findall("part-list/score-part") if p.get("id") == part_id), None)
-    drum_map = {p.get("id"): integer(p.findtext("midi-unpitched")) - 1 for p in info.findall("midi-instrument") if p.findtext("midi-unpitched")} if info is not None else {}
+    drum_map = {p.get("id"): integer(p.findtext("midi-unpitched")) - 1 for p in midi_instruments if p.findtext("midi-unpitched")}
     warnings = ["박자표·변박과 음표 시간을 보존하고 16분음표 편집 격자로 다시 배치합니다. 원본 레이아웃·보이스 분리·조표/이명동음 표기는 보존하지 않습니다. 선택한 원본 파일도 보관해주세요."]
     for index, measure in enumerate(measures):
         position, previous_start, previous_rest = Fraction(0), Fraction(0), True

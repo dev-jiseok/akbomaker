@@ -1,4 +1,5 @@
 import io
+import copy
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -165,3 +166,118 @@ def test_invalid_import_never_creates_a_project(client, tmp_path):
     response = client.post("/api/score-import", files={"file": ("score.musicxml", b"invalid")}, data={"part_id": "P1", "instrument": "bass"})
     assert response.status_code == 422
     assert list(store.DATA_DIR.glob("*/job.json")) == before
+
+
+@pytest.mark.parametrize("case", ["duplicate_midi", "duplicate_score", "missing_midi_id", "missing_score_id", "undefined_midi_reference", "undefined_note_reference", "multiple_note_references"])
+def test_ambiguous_or_undefined_instrument_ids_are_rejected(tmp_path, case):
+    _, data = exported(tmp_path, "drums")
+    tree = ET.fromstring(data)
+    info = tree.find("part-list/score-part")
+    if case == "duplicate_midi":
+        duplicate = copy.deepcopy(info.find("midi-instrument"))
+        duplicate.find("midi-unpitched").text = "43"  # last-wins would silently change kick to hi-hat
+        info.append(duplicate)
+    elif case == "duplicate_score":
+        info.append(copy.deepcopy(info.find("score-instrument")))
+    elif case == "missing_midi_id":
+        info.find("midi-instrument").attrib.pop("id")
+    elif case == "missing_score_id":
+        info.find("score-instrument").attrib.pop("id")
+    elif case == "undefined_midi_reference":
+        info.remove(info.find("score-instrument"))
+    elif case == "undefined_note_reference":
+        tree.find(".//note/instrument").set("id", "undeclared-kit-piece")
+    else:
+        first = tree.find(".//note[instrument]")
+        first.append(copy.deepcopy(first.find("instrument")))
+    with pytest.raises(ValueError, match="원본 표기 유지 · 스타일 미리보기"):
+        import_document(ET.tostring(tree), "score.xml", "P1", "drums")
+
+
+@pytest.mark.parametrize("inst", ["bass", "guitar", "piano", "vocal"])
+def test_pitched_notes_cannot_reference_an_undefined_score_instrument(tmp_path, inst):
+    _, data = exported(tmp_path, inst)
+    tree = ET.fromstring(data)
+    ET.SubElement(tree.find(".//note[pitch]"), "instrument", id="undeclared")
+    with pytest.raises(ValueError, match="score-instrument"):
+        import_document(ET.tostring(tree), "score.xml", "P1", inst)
+
+
+@pytest.mark.parametrize("case", ["visual_only", "mismatched", "continue", "duplicate"])
+def test_visual_ties_must_match_supported_playback_ties(tmp_path, case):
+    _, data = exported(tmp_path, "vocal")
+    tree = ET.fromstring(data)
+    tied = tree.find(".//note[tie]")
+    assert tied is not None
+    if case == "visual_only":
+        for note in tree.findall(".//note"):
+            for tie in list(note.findall("tie")):
+                note.remove(tie)
+    elif case == "mismatched":
+        tied.find("notations/tied").set("type", "stop")
+    elif case == "continue":
+        tied.find("notations/tied").set("type", "continue")
+    else:
+        tied.find("notations").append(copy.deepcopy(tied.find("notations/tied")))
+    with pytest.raises(ValueError, match="타이 표기.*원본 표기 유지"):
+        import_document(ET.tostring(tree), "score.xml", "P1", "vocal")
+
+
+def test_supported_playback_ties_do_not_require_redundant_visual_tied_elements(tmp_path):
+    original, data = exported(tmp_path, "vocal")
+    tree = ET.fromstring(data)
+    for notation in tree.findall(".//notations"):
+        for tie in list(notation.findall("tied")):
+            notation.remove(tie)
+    result, _, _ = import_document(ET.tostring(tree), "score.xml", "P1", "vocal")
+    assert [(n["start"], n["length"], n["pitch"]) for n in result["notes"]] == [(n["start"], n["length"], n["pitch"]) for n in original["notes"]]
+
+
+@pytest.mark.parametrize("case", ["ghost", "note_dynamics", "sound_dynamics"])
+def test_ghost_and_dynamics_are_not_silently_imported_at_default_velocity(tmp_path, case):
+    _, data = exported(tmp_path, "drums")
+    tree = ET.fromstring(data)
+    note = tree.find(".//note[unpitched]")
+    if case == "ghost":
+        ET.SubElement(note, "notehead", parentheses="yes").text = "normal"
+    elif case == "note_dynamics":
+        note.set("dynamics", "24")
+    else:
+        tree.find(".//sound").set("dynamics", "24")
+    with pytest.raises(ValueError, match="원본 표기 유지 · 스타일 미리보기"):
+        import_document(ET.tostring(tree), "score.xml", "P1", "drums")
+
+
+def test_explicitly_non_parenthesized_drum_note_preserves_standard_one_based_mapping(tmp_path):
+    _, data = exported(tmp_path, "drums")
+    tree = ET.fromstring(data)
+    ET.SubElement(tree.find(".//note[unpitched]"), "notehead", parentheses="no").text = "normal"
+    assert tree.find(".//midi-unpitched").text == "37"
+    result, _, _ = import_document(ET.tostring(tree), "score.xml", "P1", "drums")
+    assert result["notes"][0]["pitch"] == 36
+
+
+@pytest.mark.parametrize("style", ["slash", "measure-repeat", "beat-repeat", "multiple-rest"])
+def test_measure_styles_are_rejected_instead_of_losing_repeat_or_slash_semantics(tmp_path, style):
+    _, data = exported(tmp_path)
+    tree = ET.fromstring(data)
+    measure_style = ET.SubElement(tree.find(".//attributes"), "measure-style")
+    ET.SubElement(measure_style, style, type="start").text = "1"
+    with pytest.raises(ValueError, match="마디.*원본 표기 유지"):
+        import_document(ET.tostring(tree), "score.xml", "P1", "bass")
+
+
+def test_unsafe_import_is_non_destructive_and_preservation_preview_remains_available(client, tmp_path):
+    _, data = exported(tmp_path, "drums")
+    tree = ET.fromstring(data)
+    ET.SubElement(tree.find(".//note[unpitched]"), "notehead", parentheses="yes").text = "normal"
+    source = ET.tostring(tree)
+    before = list(store.DATA_DIR.glob("*/job.json"))
+    files = {"file": ("ghost.musicxml", source, "application/xml")}
+    rejected = client.post("/api/score-import", files=files, data={"part_id": "P1", "instrument": "drums"})
+    assert rejected.status_code == 422
+    assert "원본 표기 유지" in rejected.json()["detail"]
+    assert list(store.DATA_DIR.glob("*/job.json")) == before
+    preserved = client.post("/api/score-import/preserve-preview", files=files, data={"part_id": "P1", "preset": "practice", "measures_per_line": "4"})
+    assert preserved.status_code == 200, preserved.text
+    assert ET.fromstring(preserved.json()["xml"]).find(".//notehead").get("parentheses") == "yes"

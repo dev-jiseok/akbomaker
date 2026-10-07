@@ -14,10 +14,16 @@ import PitchedTranscriptionControls, { supportsPitchedComparison, supportsPitche
 import TranscriptionReview from './TranscriptionReview';
 import AudioInputNotice from './AudioInputNotice';
 import { SeparationNotice } from './SeparationOptions';
+import { recognitionUrl } from './ScoreRecognition';
+import SourceScoreEditor from './SourceScoreEditor';
 
 type Props = { job: Job; health: Health | null; onJob: (job: Job) => void; onNew: () => void; onError: (message: string) => void; onEditorDirty: (dirty: boolean) => void };
 
-export default function Workspace({ job, health, onJob, onNew, onError, onEditorDirty }: Props) {
+export default function Workspace(props: Props) {
+  return props.job.score_preserved ? <SourceScoreEditor key={props.job.id} job={props.job} onJob={props.onJob} onNew={props.onNew} onEditorDirty={props.onEditorDirty} /> : <AudioWorkspace {...props} />;
+}
+
+function AudioWorkspace({ job, health, onJob, onNew, onError, onEditorDirty }: Props) {
   const [selected, setSelected] = useState<Instrument>(() => job.source_type === 'musicxml' ? job.stems.find(s => s.score_url)?.id || 'drums' : 'drums');
   const [scale, setScale] = useState(1.1);
   const [spacious, setSpacious] = useState(true);
@@ -105,7 +111,8 @@ export default function Workspace({ job, health, onJob, onNew, onError, onEditor
     {job.analysis_error && <p className="inline-alert" role="alert">{job.analysis_error}</p>}
     {job.original_url && <RhythmWorkbench job={job} bpm={bpm} offset={audioOffset} disabled={busy || processing} onBpm={setBpm} onOffset={setAudioOffset} onAnalyze={() => void analyzeBeats()} />}
     {job.original_url && <LyricsWorkbench key={`lyrics:${job.id}`} job={job} health={health} editing={editing} onJob={onJob} onError={onError} onDirty={setLyricDirty} />}
-    {job.source_type === 'musicxml' && <div className="demo-notice"><span>가져온 악보</span><p>MusicXML에서 가져왔어요. 음원 분리·자동 채보는 실행하지 않았습니다. 음표 합성 재생과 TAB·가사·스타일 편집을 사용할 수 있어요.</p></div>}
+    {job.source_type === 'musicxml' && <div className="demo-notice"><span>{job.score_omr ? 'PDF·이미지 인식 초안' : '가져온 악보'}</span><p>{job.score_omr ? `${job.score_omr.engine}가 인식한 MusicXML에서 가져왔어요. 원본과 음정·리듬·드럼·가사를 대조해주세요. TAB은 음정에서 새로 배정한 운지이며 원본 TAB 복원이 아닙니다.` : 'MusicXML에서 가져왔어요. 음원 분리·자동 채보는 실행하지 않았습니다. 음표 합성 재생과 TAB·가사·스타일 편집을 사용할 수 있어요.'}</p></div>}
+    {job.score_omr && <details className="workspace-omr-source"><summary>인식에 사용한 원본과 결과 다시 확인</summary><div className="bulk-row">{recognitionUrl(job.score_omr.source_url, job.score_omr.id) && <a className="text-button" href={recognitionUrl(job.score_omr.source_url, job.score_omr.id)} target="_blank" rel="noopener noreferrer">원본 PDF·이미지 열기</a>}{recognitionUrl(job.score_omr.result_url, job.score_omr.id) && <a className="text-button" href={recognitionUrl(job.score_omr.result_url, job.score_omr.id)} download>가져오기용 MusicXML</a>}{job.score_omr.raw_result_url && job.score_omr.raw_result_url !== job.score_omr.result_url && recognitionUrl(job.score_omr.raw_result_url, job.score_omr.id) && <a className="text-button" href={recognitionUrl(job.score_omr.raw_result_url, job.score_omr.id)} download>엔진 원본 MusicXML (미보정)</a>}</div><p className="editor-help">아래 원본과 가져오기에 사용한 결과는 현재 수정한 악보와 별도로 보관됩니다. 인식 완료는 정확도 검증이 아닙니다.</p>{!!job.score_omr.normalizations?.length && <p className="editor-help">호환성 보정은 드럼 악기 번호의 기준만 맞춥니다. 템포·음표 위치·길이를 바꾸거나 인식 오류를 고친 결과는 아니에요. 미보정 엔진 원본도 별도로 보관합니다.</p>}{job.score_omr.warnings.length > 0 && <ul className="recognition-warnings">{job.score_omr.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}<div className="recognition-pages">{job.score_omr.preview_urls.map(url => recognitionUrl(url, job.score_omr!.id)).filter((url): url is string => !!url).map((url, index) => <a key={url} href={url} target="_blank" rel="noopener noreferrer"><img src={url} loading="lazy" alt={`인식 원본 악보 ${index + 1}번째 선택 페이지`} /></a>)}</div></details>}
     {stem.score_source_url && <a className="text-button" href={stem.score_source_url + '?download=true'}>처음 가져온 원본 MusicXML 보관 <Download size={14} /></a>}
     {job.source_type !== 'musicxml' && <Mixer key={job.id} job={job} selected={selected} onSelect={selectPart} onError={onError} />}
     <section className="score-section">

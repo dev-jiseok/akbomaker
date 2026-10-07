@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, Music2, AlertCircle, ZoomIn } from 'lucide-react';
 import type { ScoreLayout, Stem } from '../types';
+import { enableReviewedTabRhythm } from '../tabRhythmRendering';
 
-type Props = { stem: Stem; scale: number; spacious: boolean; measureNumbers: boolean; xml?: string; layout?: ScoreLayout; onMeasureSelect?: (measure: number) => void; activeMeasure?: number | null };
+type Props = { stem: Stem; scale: number; spacious: boolean; measureNumbers: boolean; xml?: string; layout?: ScoreLayout; preserveNotation?: boolean; reviewedTabRhythm?: boolean; onMeasureSelect?: (measure: number) => void; activeMeasure?: number | null };
 
-export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml, layout = stem.score_layout, onMeasureSelect, activeMeasure }: Props) {
+export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml, layout = stem.score_layout, preserveNotation = false, reviewedTabRhythm = false, onMeasureSelect, activeMeasure }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -45,9 +46,10 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
         ]);
         if (disposed) return;
         const display = new OpenSheetMusicDisplay(surface, {
-          autoResize: false, backend: 'svg', drawTitle: false, autoBeam: true,
+          autoResize: false, backend: 'svg', drawTitle: false, autoBeam: !preserveNotation,
           autoGenerateMultipleRestMeasuresFromRestMeasures: false,
           pageFormat: 'A4 P',
+          stretchLastSystemLine: preserveNotation,
           drawSubtitle: false, drawComposer: false, drawPartNames: false,
           drawMeasureNumbers: measureNumbers,
           measureNumberInterval: 1,
@@ -58,9 +60,10 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
         display.EngravingRules.NewSystemAtXMLNewSystemAttribute = true;
         display.EngravingRules.NewPageAtXMLNewPageAttribute = true;
         display.EngravingRules.UseXMLMeasureNumbers = true;
-        display.EngravingRules.TabFingeringsRendered = false;
-        display.EngravingRules.TabBeamsRendered = false;
-        display.EngravingRules.TabTimeSignatureRendered = false;
+        display.EngravingRules.TabFingeringsRendered = preserveNotation;
+        display.EngravingRules.TabBeamsRendered = preserveNotation;
+        if (preserveNotation) display.EngravingRules.AutoBeamTabs = false;
+        display.EngravingRules.TabTimeSignatureRendered = preserveNotation;
         display.EngravingRules.TabKeySignatureRendered = false;
         display.EngravingRules.TabStaffInterlineHeight = 1.25;
         display.EngravingRules.VexFlowDefaultTabFontScale = 48;
@@ -74,6 +77,7 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
         display.Zoom = (layout?.preset === 'large' ? Math.max(1.3, scale) : scale) * 0.7;
         await display.load(notation);
         if (disposed) return;
+        if (reviewedTabRhythm) enableReviewedTabRhythm(display);
         display.render();
         surface.style.width = '100%';
         setLoading(false);
@@ -95,7 +99,7 @@ export default function ScoreViewer({ stem, scale, spacious, measureNumbers, xml
       }
     })();
     return () => { disposed = true; controller.abort(); observer?.disconnect(); clearTimeout(resizeTimer); surface.removeEventListener('click', pickMeasure); };
-  }, [stem.score_url, stem.score_revision, scale, spacious, measureNumbers, xml, layout?.preset, layout?.measures_per_line]);
+  }, [stem.score_url, stem.score_revision, scale, spacious, measureNumbers, xml, layout?.preset, layout?.measures_per_line, preserveNotation, reviewedTabRhythm]);
   return <>
     {loading && <div className="score-placeholder"><LoaderCircle className="spin" size={28} /><p>악보를 그리는 중이에요</p></div>}
     {error && <div className="score-placeholder"><AlertCircle size={28} /><p>{error}</p><a href={stem.score_url + '?download=true'}>MusicXML 파일로 다운로드</a></div>}
