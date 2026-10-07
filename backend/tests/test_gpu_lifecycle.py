@@ -18,7 +18,7 @@ def test_failed_or_cancelled_job_always_releases_gpu(tmp_path, monkeypatch, fail
     else:
         engine.extract.side_effect = failure
     monkeypatch.setattr(pipeline, "ENGINE", engine)
-    def normalize(source, target):
+    def normalize(source, target, *, details=None):
         sf.write(target, np.ones(4800, dtype=np.float32) * 0.1, 48000)
         return 0.1
     monkeypatch.setattr(pipeline, "normalize", normalize)

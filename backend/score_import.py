@@ -155,6 +155,7 @@ def import_document(data, filename, part_id, inst, *, current=None):
             doc["layout"][key] = [b for b in doc["layout"].get(key, []) if b <= len(measures)]
     doc.update(ticks=total, meters=meters)
     divisions, transpose, clefs = Fraction(1), {}, {}
+    keyboard_staves = set()
     notes, ties, lyrics, annotations = [], {}, {}, []
     info = next((p for p in root.findall("part-list/score-part") if p.get("id") == part_id), None)
     drum_map = {p.get("id"): integer(p.findtext("midi-unpitched")) - 1 for p in info.findall("midi-instrument") if p.findtext("midi-unpitched")} if info is not None else {}
@@ -167,6 +168,11 @@ def import_document(data, filename, part_id, inst, *, current=None):
         section, cue = "", ""
         for node in measure:
             if node.tag == "attributes":
+                if inst in {"piano", "synthesizer"} and node.find("staves") is not None:
+                    count = integer(node.findtext("staves"))
+                    if count not in {1, 2}:
+                        raise ValueError("건반 악보는 오른손·왼손 두 보표까지 가져올 수 있어요.")
+                    keyboard_staves.update(str(s) for s in range(1, count + 1))
                 if node.find("divisions") is not None:
                     divisions = number(node.findtext("divisions"))
                     if divisions <= 0:
@@ -221,10 +227,14 @@ def import_document(data, filename, part_id, inst, *, current=None):
                     if absolute in lyrics and lyrics[absolute] != texts[0]:
                         raise ValueError("같은 위치에 서로 다른 파트 가사가 겹쳐요.")
                     lyrics[absolute] = texts[0]
+                staff = node.findtext("staff", "1")
+                if inst in {"piano", "synthesizer"}:
+                    if staff not in {"1", "2"}:
+                        raise ValueError("건반 악보는 오른손·왼손 두 보표까지 가져올 수 있어요.")
+                    keyboard_staves.add(staff)
                 previous_rest = node.find("rest") is not None
                 if previous_rest:
                     continue
-                staff = node.findtext("staff", "1")
                 if node.find("unpitched") is not None:
                     instrument = node.find("instrument")
                     pitch = drum_map.get(instrument.get("id")) if instrument is not None else None
@@ -239,6 +249,8 @@ def import_document(data, filename, part_id, inst, *, current=None):
                     pitch = int(pitch)
                 technical = node.find("notations/technical")
                 note = {"id": uuid4().hex, "start": absolute, "length": int(size), "pitch": pitch, "velocity": 80}
+                if inst in {"piano", "synthesizer"}:
+                    note["hand"] = "left" if staff == "2" else "right"
                 if technical is not None and technical.find("string") is not None and doc["tab"]:
                     note.update(string=integer(technical.findtext("string")), fret=integer(technical.findtext("fret")))
                 if technical is not None and technical.find("bend") is not None:
@@ -284,9 +296,15 @@ def import_document(data, filename, part_id, inst, *, current=None):
         else:
             combined[key] = note
     doc.update(notes=list(combined.values()), lyrics=[{"id": uuid4().hex, "start": s, "text": t} for s, t in sorted(lyrics.items())], annotations=annotations)
-    if inst not in {"bass", "guitar"} and len(clefs) > 1:
+    if inst in {"piano", "synthesizer"}:
+        if any(s not in {"1", "2"} for s in clefs) or any(c not in {"G", "F"} for c in clefs.values()):
+            raise ValueError("높은음자리·낮은음자리의 두 보표 건반 악보를 선택해주세요.")
+        grand = "2" in clefs or "2" in keyboard_staves
+        doc["keyboard"] = {"mode": "grand" if grand else "single", "split_pitch": 60}
+        warnings.append("건반의 위·아래 보표 배정을 보존합니다. 보표 안의 여러 성부와 음자리표 변경은 다시 조판합니다.")
+    elif inst not in {"bass", "guitar"} and len(clefs) > 1:
         raise ValueError("피아노 양손 등 여러 오선 파트는 아직 보존하지 못해요. 단일 보표 파트를 선택해주세요.")
-    edit = ScoreEdit(base_revision=doc["revision"], **{k: doc[k] for k in ("title", "bpm", "ticks", "meters", "notes", "lyrics", "annotations", "tab", "layout")})
+    edit = ScoreEdit(base_revision=doc["revision"], **{k: doc[k] for k in ("title", "bpm", "ticks", "meters", "notes", "lyrics", "annotations", "tab", "keyboard", "layout")})
     result = validate_edit(edit, doc)
     if current:
         result["revision"] = current["revision"]

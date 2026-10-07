@@ -4,11 +4,12 @@ import { defaultMeters } from './scoreRhythm';
 export const drumLanes = [
   { pitch: 49, label: '크래시' }, { pitch: 51, label: '라이드' }, { pitch: 46, label: '오픈 하이햇' },
   { pitch: 42, label: '하이햇' }, { pitch: 50, label: '하이 탐' }, { pitch: 47, label: '미드 탐' },
-  { pitch: 38, label: '스네어' }, { pitch: 45, label: '플로어 탐' }, { pitch: 36, label: '킥' },
+  { pitch: 38, label: '스네어' }, { pitch: 37, label: '사이드스틱' }, { pitch: 45, label: '플로어 탐' },
+  { pitch: 44, label: '페달 하이햇' }, { pitch: 36, label: '킥' },
 ];
 export const presetLabels = { practice: '합주용 · 넓은 간격', standard: '기본 · 간결하게', large: '큰 악보 · 가독성' };
 export function editBody(doc: ScoreDocument, revision = doc.revision) {
-  return { base_revision: revision, title: doc.title, bpm: doc.bpm, ticks: doc.ticks, meters: doc.meters || defaultMeters, notes: doc.notes, annotations: doc.annotations, layout: doc.layout, tab: doc.tab ? { ...doc.tab, order: doc.tab.order || 'staff-first', capo: doc.tab.capo || 0 } : null, lyrics: doc.lyrics || [] };
+  return { base_revision: revision, title: doc.title, bpm: doc.bpm, ticks: doc.ticks, meters: doc.meters || defaultMeters, notes: doc.notes, annotations: doc.annotations, layout: doc.layout, keyboard: doc.keyboard, tab: doc.tab ? { ...doc.tab, order: doc.tab.order || 'staff-first', capo: doc.tab.capo || 0 } : null, lyrics: doc.lyrics || [] };
 }
 export function pitchLabel(pitch: number) {
   return `${['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'][pitch % 12]}${Math.floor(pitch / 12) - 1}`;

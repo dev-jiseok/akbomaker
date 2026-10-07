@@ -168,7 +168,7 @@ def test_actual_upload_pipeline_and_transcription_contract(client, monkeypatch):
     all_audio = [sf.read(io.BytesIO(client.get(s["audio_url"]).content))[0] for s in job["stems"]]
     residual, _ = sf.read(io.BytesIO(client.get(job["residual_url"]).content))
     np.testing.assert_allclose(sum(all_audio) + residual, samples, atol=1e-7)
-    monkeypatch.setattr(pipeline, "transcribe", lambda path, inst: [(0, 0.5, 69, 0.8)])
+    monkeypatch.setattr(pipeline, "transcribe", lambda path, inst, **kwargs: [(0, 0.5, 69, 0.8)])
     response = client.post(f'/api/jobs/{job["id"]}/transcribe', json={"instruments": ["piano"], "bpm": 120})
     assert response.status_code == 202
     job = finish(client, response.json())

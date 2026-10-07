@@ -1,0 +1,10 @@
+# Optional isolated CPU monophonic challenger only; not app/ADT dependencies.
+# The torchcrepe wheel includes the two MIT pretrained checkpoints (~69 MiB).
+torchcrepe==0.0.24
+torch==2.8.0
+torchaudio==2.8.0
+numpy==2.4.6
+librosa==0.11.0
+soundfile==0.13.1
+scipy==1.17.1
+resampy==0.4.3

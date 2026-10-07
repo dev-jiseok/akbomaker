@@ -31,6 +31,16 @@ describe('score editing', () => {
     expect(editBody(doc).base_revision).toBe('original');
     expect(pitchLabel(60)).toBe('C4');
   });
+  it('saves keyboard notation and manual hands without changing pitches or timing', () => {
+    const initial = toggleNote({ ...doc, keyboard: { mode: 'grand', split_pitch: 60 } }, 48, 0, 4, 'a');
+    const assigned = updateNote(initial, 'a', { hand: 'right' });
+    expect(assigned.notes[0]).toMatchObject({ hand: 'right', pitch: 48, start: 0, length: 4 });
+    expect(initial.notes[0].hand).toBeUndefined();
+    expect(contentKey(initial)).not.toBe(contentKey(assigned));
+    expect(editBody(assigned).keyboard).toEqual({ mode: 'grand', split_pitch: 60 });
+    expect(contentKey(assigned)).not.toBe(contentKey({ ...assigned, keyboard: { mode: 'single', split_pitch: 60 } }));
+    expect(contentKey(assigned)).toBe(contentKey({ ...assigned, transcription: { engine: 'pyin', profile: 'instrument', warning: 'draft', timing_reviewed: false } }));
+  });
   it('enters frets in concert pitch, trims the same string and validates manual movement', () => {
     const bass = { ...doc, instrument: 'bass' as const, tab: { mode: 'both' as const, tuning: [43, 38, 33, 28] } };
     const first = toggleTabNote(bass, 4, 3, 0, 16, 'a');

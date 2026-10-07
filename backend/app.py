@@ -6,9 +6,11 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from .frontend import FrontendFiles
 from pydantic import BaseModel, Field
 from uuid import uuid4
@@ -20,8 +22,11 @@ from .pipeline import run_demo, run_separation, run_transcription, run_cpu_analy
 from .editing import Meter, ScoreEdit, load_document, persist, validate_edit, notation_metadata
 from .rhythm import normalize_meters, measure_map
 from .separator import engine_status
+from .drum_worker import worker_status
 from . import lyrics
 from . import score_import
+from . import transcription_review
+from . import review_cases
 from .startup import prepare_engines
 
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-worker")
@@ -108,11 +113,13 @@ def submit(job_id: str, function, event, *args):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "ready": getattr(app.state, "engines_ready", False), "engine": engine_status(), "lyrics": lyrics.status(), "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024), "max_audio_seconds": MAX_AUDIO_SECONDS}, "demo_available": True}
+    return {"ok": True, "ready": getattr(app.state, "engines_ready", False), "engine": engine_status(), "drum_engine": worker_status(), "lyrics": lyrics.status(), "limits": {"max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024), "max_audio_seconds": MAX_AUDIO_SECONDS}, "demo_available": True}
 
 
 @app.post("/api/jobs", status_code=202)
-async def create_job(file: UploadFile | None = File(default=None), url: str | None = Form(default=None), analysis_only: bool = Form(default=False)):
+async def create_job(file: UploadFile | None = File(default=None), url: str | None = Form(default=None), analysis_only: bool = Form(default=False), separation_strategy: Literal["sequential", "independent"] = Form(default="sequential")):
+    if analysis_only and separation_strategy != "sequential":
+        raise HTTPException(422, "원본만 분석할 때는 악기 분리 방식을 지정할 수 없어요.")
     if bool(file) == bool(url):
         raise HTTPException(422, "음악 파일 또는 유튜브 링크 중 하나를 선택해주세요.")
     if url:
@@ -130,7 +137,7 @@ async def create_job(file: UploadFile | None = File(default=None), url: str | No
         if len(EVENTS) >= 3:
             raise HTTPException(429, "현재 처리할 작업이 많아요. 잠시 뒤 다시 시도해주세요.")
         job = store.create(Path(file.filename or "음악").stem if file else "YouTube 음악", "upload" if file else "youtube")
-        job = store.update(job["id"], analysis_only=analysis_only)
+        job = store.update(job["id"], analysis_only=analysis_only, separation_strategy=separation_strategy)
         event = threading.Event()
         EVENTS[job["id"]] = event
     source = store.directory(job["id"]) / f"source{extension}" if file else None
@@ -145,7 +152,7 @@ async def create_job(file: UploadFile | None = File(default=None), url: str | No
                     output.write(chunk)
             if total == 0:
                 raise HTTPException(422, "빈 파일은 업로드할 수 없어요.")
-        submit(job["id"], run_separation, event, source, url, analysis_only)
+        submit(job["id"], run_separation, event, source, url, analysis_only, separation_strategy)
         return job
     except BaseException as error:
         with TASK_LOCK:
@@ -171,7 +178,15 @@ def create_demo():
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
-    return valid_job(job_id)
+    job = valid_job(job_id)
+    # Read-only compatibility for projects created before offset metadata existed.
+    # Do not rewrite the user's score, revision, or job merely by viewing it.
+    for stem in job["stems"]:
+        if stem.get("score_url") and "score_audio_offset" not in stem:
+            path = store.directory(job_id) / f'{stem["id"]}.score.json'
+            if path.is_file():
+                stem["score_audio_offset"] = load_document(store.directory(job_id), stem["id"], job["duration"])["audio_offset"]
+    return job
 
 
 async def read_score_upload(file):
@@ -251,6 +266,10 @@ class TranscriptionRequest(BaseModel):
     overwrite_edits: bool = False
     audio_offset: float = Field(default=0, ge=0, le=600, allow_inf_nan=False)
     meter: Meter = Field(default_factory=lambda: Meter(measure=1, beats=4, beat_type=4))
+    profile: Literal["instrument", "polyphonic"] = "instrument"
+    drum_engine: Literal["auto", "neural", "spectral", "hybrid", "consensus"] = "auto"
+    drum_source: Literal["stem", "original"] = "stem"
+    pitched_engine: Literal["standard", "adaptive"] = "standard"
 
 
 @app.post("/api/jobs/{job_id}/transcribe", status_code=202)
@@ -268,17 +287,32 @@ def start_transcription(job_id: str, body: TranscriptionRequest):
     instruments = list(dict.fromkeys(body.instruments))
     if any(inst not in INSTRUMENTS for inst in instruments):
         raise HTTPException(422, "지원하지 않는 악기가 포함되어 있어요.")
+    # The frozen multi-instrument candidate regressed on guitar/piano controls.
+    # Keep their low-level decoder research-only; never silently opt them in.
+    if body.pitched_engine == "adaptive" and set(instruments) != {"synthesizer"}:
+        raise HTTPException(422, "지속음 보강은 신디사이저에서만 선택해주세요. 기타·피아노는 검증 중이에요.")
     ready = {stem["id"] for stem in job["stems"] if stem["status"] == "ready"}
+    # A user-supplied drum recording / original mix can be analyzed on CPU
+    # without pretending SAM separation has run or marking other stems ready.
+    if body.drum_source == "original" and (store.directory(job_id) / "original.wav").is_file():
+        ready.add("drums")
     if not set(instruments).issubset(ready):
         raise HTTPException(409, "아직 분리되지 않은 악기가 포함되어 있어요.")
     if not body.overwrite_edits and any(s.get("score_edited") and s["id"] in instruments for s in job["stems"]):
         raise HTTPException(409, "직접 수정한 악보가 있어요. 다시 채보하면 수정본을 대체하므로 먼저 확인해주세요.")
-    if not job["demo"] and any(inst != "drums" for inst in instruments) and not engine_status()["transcription_available"]:
+    needs_basic_pitch = any(inst in {"guitar", "piano", "synthesizer"} or (inst in {"vocal", "bass"} and body.profile == "polyphonic") for inst in instruments)
+    if not job["demo"] and needs_basic_pitch and not engine_status()["transcription_available"]:
         raise HTTPException(503, "서버에 Basic Pitch 채보 엔진을 설치해주세요.")
+    if not job["demo"] and "drums" in instruments:
+        worker = worker_status()
+        if (body.drum_engine in {"neural", "hybrid", "consensus"} or (body.drum_engine == "auto" and worker["configured"])) and not worker["paths_ready"]:
+            raise HTTPException(503, "드럼 전용 모델의 별도 실행 환경·체크포인트 설정을 확인해주세요.")
+        if body.drum_source == "original" and not (store.directory(job_id) / "original.wav").is_file():
+            raise HTTPException(409, "비교할 원본 음원이 없어요.")
     meters = generation_meters(body, job["duration"])
     event = reserve(job_id)
     job = store.update(job_id, status="transcribing", stage="transcribing", progress=0, error=None)
-    submit(job_id, run_transcription, event, instruments, body.bpm, body.audio_offset, meters)
+    submit(job_id, run_transcription, event, instruments, body.bpm, body.audio_offset, meters, body.profile, body.drum_engine, body.drum_source, body.pitched_engine)
     return job
 
 
@@ -442,6 +476,52 @@ def get_score_document(job_id: str, inst: str, original: bool = False):
             raise HTTPException(404, "편집할 악보를 찾을 수 없어요.")
 
 
+@app.get("/api/jobs/{job_id}/transcription-review/{inst}")
+def get_transcription_review(job_id: str, inst: str, start: float = 0, seconds: float = 8):
+    try:
+        return transcription_review.inspect_review(job_id, inst, start, seconds,
+                                                   task_lock=TASK_LOCK, active_jobs=EVENTS, get_job=valid_job)
+    except transcription_review.ReviewError as error:
+        raise HTTPException(error.status, str(error)) from None
+
+
+@app.exception_handler(transcription_review.ReviewError)
+async def review_case_error(request: Request, error: transcription_review.ReviewError):
+    return JSONResponse({"detail": str(error)}, status_code=error.status)
+
+
+def review_case_context():
+    return {"task_lock": TASK_LOCK, "active_jobs": EVENTS, "get_job": valid_job}
+
+
+@app.get("/api/jobs/{job_id}/review-cases/{inst}")
+def list_review_cases(job_id: str, inst: str):
+    return review_cases.list_cases(job_id, inst, **review_case_context())
+
+
+@app.post("/api/jobs/{job_id}/review-cases/{inst}", status_code=201)
+async def create_review_case(job_id: str, inst: str, request: Request):
+    body = await review_cases.read_body(request)
+    return await run_in_threadpool(review_cases.create_case, job_id, inst, body, **review_case_context())
+
+
+@app.get("/api/jobs/{job_id}/review-cases/{inst}/{case_id}")
+def get_review_case(job_id: str, inst: str, case_id: str):
+    return review_cases.get_case(job_id, inst, case_id, **review_case_context())
+
+
+@app.put("/api/jobs/{job_id}/review-cases/{inst}/{case_id}")
+async def update_review_case(job_id: str, inst: str, case_id: str, request: Request):
+    body = await review_cases.read_body(request)
+    return await run_in_threadpool(review_cases.update_case, job_id, inst, case_id, body, **review_case_context())
+
+
+@app.get("/api/jobs/{job_id}/review-cases/{inst}/{case_id}/export")
+def export_review_case(job_id: str, inst: str, case_id: str):
+    document = review_cases.export_case(job_id, inst, case_id, **review_case_context())
+    return JSONResponse(document, headers={"Content-Disposition": f'attachment; filename="akbo-review-{inst}-{case_id[:8]}.json"'})
+
+
 @app.put("/api/jobs/{job_id}/scores/{inst}")
 def save_score_document(job_id: str, inst: str, body: ScoreEdit):
     # Serializes edits with transcription; stale browser tabs cannot overwrite.
@@ -541,18 +621,31 @@ def copy_score_lyrics(job_id: str, inst: str, body: CopyLyricsRequest):
 
 
 def allowed_files() -> set[str]:
-    return {"original.wav", "residual.wav", *[f"{inst}.{extension}" for inst in INSTRUMENTS for extension in ("wav", "mid", "musicxml", "source.musicxml")]}
+    return {"original.wav", "residual.wav", "drums.raw.mid", "drums.transcription.json",
+            *[f"{inst}.transcription.json" for inst in ("guitar", "piano", "synthesizer")],
+            *[f"{inst}.{extension}" for inst in INSTRUMENTS for extension in ("wav", "mid", "musicxml", "source.musicxml", "notes.json")]}
+
+
+def current_artifact(job, name):
+    # A later spectral run must not present a previous neural result as current.
+    if name.endswith(".notes.json"):
+        inst = name.removesuffix(".notes.json")
+        return any(s["id"] == inst and (s.get("score_transcription") or {}).get("raw_events") is True for s in job["stems"])
+    if name in {f"{inst}.transcription.json" for inst in ("guitar", "piano", "synthesizer")}:
+        inst = name.removesuffix(".transcription.json")
+        return any(s["id"] == inst and (s.get("score_transcription") or {}).get("pitched_review") is True for s in job["stems"])
+    return name not in {"drums.raw.mid", "drums.transcription.json"} or any(s["id"] == "drums" and (s.get("score_transcription") or {}).get("raw_midi") for s in job["stems"])
 
 
 @app.get("/api/jobs/{job_id}/files/{name}")
 def download(job_id: str, name: str, download: bool = False):
-    valid_job(job_id)
-    if name not in allowed_files():
+    job = valid_job(job_id)
+    if name not in allowed_files() or not current_artifact(job, name):
         raise HTTPException(404, "파일을 찾을 수 없어요.")
     path = store.directory(job_id) / name
     if not path.is_file():
         raise HTTPException(404, "파일이 아직 준비되지 않았어요.")
-    mime = {".wav": "audio/wav", ".mid": "audio/midi", ".musicxml": "application/vnd.recordare.musicxml+xml"}[path.suffix]
+    mime = {".wav": "audio/wav", ".mid": "audio/midi", ".musicxml": "application/vnd.recordare.musicxml+xml", ".json": "application/json"}[path.suffix]
     return FileResponse(path, media_type=mime, filename=name if download or name.endswith(".source.musicxml") else None)
 
 
@@ -567,10 +660,12 @@ def archive(job_id: str):
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for name in sorted(allowed_files()):
             path = store.directory(job_id) / name
-            if path.is_file():
+            if path.is_file() and current_artifact(job, name):
                 bundle.write(path, name)
         source_note = "Imported MusicXML score. No audio separation or transcription.\n" if job["source_type"] == "musicxml" else "Original audio only. SAM inference not run.\n" if job.get("analysis_only") else "Original synthesized demo. Not SAM Audio inference.\n" if job["demo"] else "SAM Audio sequential source separation.\n"
-        bundle.writestr("README.txt", "Akbo Maker\n" + source_note + "Scores use a 1/16-note grid with saved time signatures. BPM is quarter notes per minute. Check pitches and rhythm.\nAutomatic drum transcription uses experimental spectral-onset estimates.\n")
+        if not job["demo"] and not job.get("analysis_only") and job.get("separation_strategy") == "independent":
+            source_note = "SAM Audio independent source separation (experimental). Each instrument was extracted from the original mix. Stems may overlap; there is no additive residual. Accuracy improvement is not established.\n"
+        bundle.writestr("README.txt", "Akbo Maker\n" + source_note + "Scores use a 1/16-note grid with saved time signatures. BPM is quarter notes per minute. Check pitches and rhythm.\nDrum transcription is an experimental draft. drums.raw.mid (when present) preserves pre-quantization GM detections, including unsupported percussion. drums.transcription.json records the engine and review data.\n<instrument>.notes.json (when present) preserves source-linked events passed to notation, before time quantization and score offset. These are post-processed drafts, not ground truth, and do not include subsequent manual score edits. Amplitude is relative event strength, NOT confidence or accuracy.\nPitched <instrument>.transcription.json (when present) compares standard and experimental onset-relative decoding of the same model output. Activations are NOT confidence; overlapping octaves can be genuine notes. Only synthesizer currently exposes the experimental mode; guitar/piano candidates failed validation. These files describe transcription-time evidence, not later manual edits.\n")
     temporary.replace(target)
     return FileResponse(target, media_type="application/zip", filename=f"akbo-{job_id[:8]}.zip")
 

@@ -1,5 +1,6 @@
 """Bar geometry on the existing sixteenth grid; BPM always means quarters."""
 import math
+from bisect import bisect_right
 
 SUPPORTED_METERS = {(2, 4), (3, 4), (4, 4), (6, 8), (9, 8), (12, 8)}
 DEFAULT_METERS = [{"measure": 1, "beats": 4, "beat_type": 4}]
@@ -45,3 +46,29 @@ def measure_map(ticks, meters=None, *, exact=True):
 
 def grouping_ticks(bar):
     return 6 if bar["beat_type"] == 8 else 4
+
+
+def drum_attack_lengths(notes, ticks, meters=None):
+    """Engrave new percussion detections by rhythm, not by acoustic decay.
+
+    Within each stem-direction voice, end at the next attack, bar boundary or
+    beat-group limit. Manual edits and imported scores must not call this.
+    """
+    bars = measure_map(ticks, meters)
+    starts = [bar["start"] for bar in bars]
+    from .drum_mapping import FOOT_PITCHES
+    onsets = {voice: sorted({n["start"] for n in notes if (n["pitch"] in FOOT_PITCHES) == voice}) for voice in (False, True)}
+    result = []
+    for note in notes:
+        start = note["start"]
+        bar = bars[bisect_right(starts, start) - 1]
+        voice = onsets[note["pitch"] in FOOT_PITCHES]
+        index = bisect_right(voice, start)
+        next_attack = voice[index] if index < len(voice) else ticks
+        group = grouping_ticks(bar)
+        # A late-in-beat hit must not acquire a full beat of sustain and a tie
+        # into the next beat. Percussion length is an engraving choice here.
+        beat_end = bar["start"] + ((start - bar["start"]) // group + 1) * group
+        end = min(next_attack, bar["end"], beat_end)
+        result.append({**note, "length": max(1, end - start)})
+    return result
