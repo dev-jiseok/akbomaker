@@ -94,11 +94,12 @@ def main():
     # Match the official evaluation order: downmix, resample, then peak scale.
     # All routes use exactly one resample; passing the target rate below avoids
     # a second resample inside ADTTranscriber.
-    audio, _ = prepare_audio(audio, normalization="none")
+    audio, source_conditioning = prepare_audio(audio, normalization="none")
     if sr != model.sample_rate:
         audio = torchaudio.transforms.Resample(sr, model.sample_rate)(torch.from_numpy(audio)).numpy()
         sr = model.sample_rate
     audio, conditioning = prepare_audio(audio, normalization=args.normalization)
+    conditioning["channel_preprocessing"] = source_conditioning["channel_preprocessing"]
     # Tensor input avoids TorchCodec / FFmpeg loading differences on macOS.
     waveform = torch.from_numpy(audio.copy())
     silent = conditioning["silent_input"]

@@ -114,12 +114,22 @@ def melody_events(path: Path, inst: str, *, details=None):
     return clean_events(events, duration)
 
 
-def multiband_drums(path: Path):
+def multiband_drums(path: Path, *, details=None):
     """Lightweight fallback: independent kick/snare/hat attacks, not a neural ADT."""
     import librosa
     from scipy.ndimage import median_filter
     from scipy.signal import find_peaks
-    samples, sr = librosa.load(path, sr=22050, mono=True)
+    from .audio_channels import mono_with_cancellation_guard
+    channels, original_sr = librosa.load(path, sr=None, mono=False)
+    samples, preprocessing = mono_with_cancellation_guard(channels.T)
+    # As with librosa.load(mono=True), average before resampling. Retain an
+    # audible original channel only when that averaging would cancel it out.
+    sr = 22050
+    samples = librosa.resample(samples, orig_sr=original_sr, target_sr=sr)
+    if details is not None:
+        details["channel_preprocessing"] = preprocessing
+        if preprocessing["used_channel_fallback"]:
+            details["warning"] = details.get("warning", "") + " 좌우 채널을 합치면 타격이 상쇄돼 원본 한 채널로 분석했어요. 반대 채널의 독립적인 타격은 누락될 수 있으니 확인해주세요."
     if len(samples) < 1024:
         return []
     duration = len(samples) / sr
@@ -236,9 +246,15 @@ def transcribe_drums(path, duration, *, engine="auto", artifacts=None):
             details["warning"] += f' 불완전한 분석 {recovery["replaced_chunks"]}구간을 제한 디코더로 재분석했어요. 형식 복구는 타격 정확도 보증이 아니며 원래 출력도 검토 JSON에 보존했어요.'
         if recovery.get("unresolved_chunks"):
             details["warning"] += " 재분석 후에도 불완전한 구간이 남아 있어요. 해당 구간의 누락·추가 타격을 확인해주세요."
+        channels = (details.get("conditioning") or {}).get("channel_preprocessing")
+        if channels:
+            details["channel_preprocessing"] = channels
+            if channels.get("used_channel_fallback"):
+                details["warning"] += " 좌우 채널을 합치면 타격이 상쇄돼 원본 한 채널로 분석했어요. 반대 채널의 독립적인 타격은 누락될 수 있으니 확인해주세요."
         return events, details
-    return multiband_drums(path), {"engine": "multiband-onsets-v2", "profile": "instrument",
-                                   "warning": "경량 검출은 킥·스네어·하이햇 3종만 추정하며 스네어 누락·오인식 한계가 커요. 전용 AI와 비교해보세요."}
+    details = {"engine": "multiband-onsets-v2", "profile": "instrument",
+               "warning": "경량 검출은 킥·스네어·하이햇 3종만 추정하며 스네어 누락·오인식 한계가 커요. 전용 AI와 비교해보세요."}
+    return multiband_drums(path, details=details), details
 
 
 def transcribe_instrument(path, inst, model_factory, profile="instrument", *, engine="standard", details=None, artifacts=None):

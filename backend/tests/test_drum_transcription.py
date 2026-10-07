@@ -100,7 +100,7 @@ def test_worker_artifacts_preserve_unsupported_events_and_safe_metadata(tmp_path
 def test_unconfigured_neural_request_does_not_silently_fall_back(tmp_path, monkeypatch):
     import backend.transcription as transcription
     monkeypatch.delenv("AKBO_DRUM_WORKER", raising=False)
-    monkeypatch.setattr(transcription, "multiband_drums", lambda p: [(0, .1, 36, 1)])
+    monkeypatch.setattr(transcription, "multiband_drums", lambda p, **kwargs: [(0, .1, 36, 1)])
     assert not worker_status()["configured"]
     assert transcription.transcribe_drums(tmp_path / "audio.wav", 1)[0][0][2] == 36
     with pytest.raises(ValueError, match="실행 환경"):
@@ -109,6 +109,32 @@ def test_unconfigured_neural_request_does_not_silently_fall_back(tmp_path, monke
     with pytest.raises(ValueError, match="실행 환경"):
         transcription.transcribe_drums(tmp_path / "audio.wav", 1, engine="auto")
     assert transcription.transcribe_drums(tmp_path / "audio.wav", 1, engine="spectral")[1]["engine"] == "multiband-onsets-v2"
+
+
+@pytest.mark.parametrize("engine", ["neural", "hybrid", "consensus"])
+def test_neural_channel_protection_survives_engine_description_and_note_provenance(tmp_path, monkeypatch, engine):
+    import numpy as np
+    import soundfile as sf
+    from backend import drum_worker, transcription
+    from backend.drum_audio import prepare_audio
+    from backend.note_artifacts import write_note_artifact
+    path = tmp_path / "drums.wav"
+    mono = (.1 * np.sin(np.arange(16000) / 20)).astype(np.float32)
+    audio = np.column_stack([mono, -mono])
+    sf.write(path, audio, 16000, subtype="FLOAT")
+    _, conditioning = prepare_audio(audio)
+    monkeypatch.setattr(drum_worker, "worker_status", lambda: {"paths_ready": True})
+    monkeypatch.setattr(transcription, "multiband_drums", lambda path, **kwargs: [])
+    def run(path, duration, *, details, **kwargs):
+        details.update(conditioning=conditioning, review={"unsupported_count": 0, "simplified_counts": {}})
+        return [(0., .1, 42, .5)]
+    monkeypatch.setattr(drum_worker, "transcribe_external", run)
+    events, details = transcription.transcribe_drums(path, 1., engine=engine)
+    assert details["channel_preprocessing"] == conditioning["channel_preprocessing"]
+    assert "상쇄" in details["warning"] and "누락될 수" in details["warning"]
+    write_note_artifact(tmp_path, events, instrument="drums", source=path, duration=1., description=details)
+    provenance = json.loads((tmp_path / "drums.notes.json").read_text())["provenance"]
+    assert provenance["channel_preprocessing"]["used_channel_fallback"]
 
 
 def test_pedal_hat_and_side_stick_round_trip_as_distinct_voices(tmp_path):
