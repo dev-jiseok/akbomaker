@@ -1,0 +1,130 @@
+Independent drum recognition research — 2026-10-06
+
+Decision
+The default ADT_STR recognizer and all existing scores are unchanged. An
+independent STRUM V14 onset detector + single V12c classifier now runs locally
+and produces review JSON. It is not the complete STRUM game-chart pipeline,
+and upstream headline accuracy numbers must not be attributed to this adapter.
+
+Primary sources checked
+1. https://github.com/opria123/strum
+   Source README declares MIT. Its reported game-chart benchmark uses ±100 ms
+   and global-offset search; ours uses fixed ±50 ms without reference shifts.
+2. https://huggingface.co/opria123/strum
+   Model card declares MIT; only two checkpoint files were downloaded (564.6 MB).
+3. https://github.com/MZehren/ADTOF
+   Independent CRNN alternative, original CC BY-NC-SA 4.0. Not installed.
+4. https://github.com/xavriley/ADTOF-pytorch
+   Author-linked port, but separate port license was not clear. Not installed.
+5. https://github.com/ddman1101/Separate-and-detect
+   https://huggingface.co/ddman1101/Separate-and-Detect
+   Recent five-stem diffusion approach with MIT-labeled main weights. Needs
+   separate VAE/vocoder dependencies and substantial runtime work; not installed.
+6. https://github.com/Music-and-Culture-Technology-Lab/omnizart
+   Official README warns about ARM macOS compatibility. Not installed.
+7. https://magenta.tensorflow.org/oaf-drums
+   Independent Onsets-and-Frames/E-GMD model, legacy TensorFlow runtime; not installed.
+
+Pinned reproducibility
+Source: 9f420cb6550284d15188e9b69f27614ee62fa731
+Weights: 6f8997f53c6eb04e0cb38f679c593d27ae89ab7f
+V14 SHA-256: 91b1b35c006b961b829e0727fbdbc3bae09955c3d0821f57717b91472def2850
+V12c SHA-256: fc2c8b2541aa22fd9490c3882fb744ef66849f2f43780e05693c625cc68b53bc
+Source/checkpoint hashes are checked before importing/deserializing. Only
+weights_only=True is allowed, plus explicit numeric NumPy scalar metadata.
+No arbitrary checkpoint loader, online inference, or user-audio upload.
+
+Adapter choices fixed before evaluation
+- Follow pinned executable source: 44.1 kHz, not README's 22.05 kHz description.
+- Ten-second overlapping onset windows; complete coverage includes short tails.
+- Zero-pad classifier boundary windows instead of silently ignoring them.
+- Onset threshold .5 from checkpoint config; all class sigmoids .5, no local sweep.
+- Two-pass neighboring-onset context, single V12c (not seven-model ensemble).
+- No pattern filling, rhythmic quantization, class-forcing, spectral override,
+  reference-derived timing shift, or silent removal of implausible co-occurrences.
+- Hi-hat articulation, snare technique, exact tom tuning, and dynamics are not
+  recognized. GM pitches are representative transport labels; amplitude is fixed.
+
+Measured results
+Reused MDB recordings: 10 distinct songs, 14 conditions (10 drum-only + 4 mixes).
+The four mixes are the SAME recordings, not four additional independent songs.
+These are development diagnostics, not held-out generalization results. MDB
+recording/mix audio is NOT a SAM separation benchmark. Labels remain the existing
+human references; dataset has noncommercial restrictions already recorded locally.
+
+Common five-family onset F1 ±50 ms, with unsupported events and duplicate folded
+events retained (NOT articulation, offset, score-readability, or transcription CER):
+                            ADT 3-pass       STRUM raw V14+V12c
+Drum-only (10):             0.8830           0.7759
+Full mix (4):               0.4571           0.6257
+All conditions:            0.7506           0.7323
+Matched / extra / missing:  745 / 262 / 233  658 / 161 / 320
+
+Complementary examples, not universal gains:
+- Rock hat correct: 17 -> 22, zero extra hats in either output.
+- Reggae hat correct: 6 -> 11, one extra hat in either output.
+- Country1 clean hat correct: 10 -> 2 (regression).
+- Beatles clean: candidate invented four hats where reference has none.
+Therefore automatic replacement was rejected.
+
+Exploratory independent-confirmation follow-up
+Only an existing rejected one-of-three ADT hat can be proposed if an independent
+STRUM hat is within 50 ms. Existing baseline hats reserve nearby evidence, one
+independent hit cannot support multiple suggestions, original ADT time/subtype
+is retained. This preserves baseline events, but does not confirm the subtype.
+Policy was fixed before the follow-up comparison, after the model comparison;
+it is explicitly exploratory and the reused validation IDs are not new holdout.
+
+Across 14 conditions the hypothetical additions were 53:
+- Kit-11 labels: +37 correct, +16 extra errors.
+- Five-family labels: +42 correct, +11 extra errors.
+- Rock: +10 correct, zero extra.
+- Country1 mix: +2 correct, +9 extra (kit-11).
+- Disco: +2 correct, +3 extra.
+Thus shipped output is REVIEW SUGGESTIONS ONLY, with no automatic score mutation.
+False-positive and unconfirmed-articulation warnings are included in every report.
+
+Actual user-song first 12 seconds, no human reference
+                         Events   Hat-family count   First detected hat
+ADT, separated drums       82          31                 0.8932 s
+STRUM, separated drums     80          36                 0.8707 s
+ADT, true original mix     79          10                 5.3682 s
+STRUM, true original mix   66          14                 1.7763 s
+Counts are disagreements, NOT accuracy measurements. Neither detector recovered
+a hat before 0.87 s. Review-only confirmation emits four pre-existing rejected
+ADT hat candidates; the original intro and score have not been fixed or replaced.
+
+Local evidence (ignored data, never pushed as user audio)
+.data/strum-research-20261006/evaluation.json
+.data/strum-research-20261006/rescue-evaluation.json
+.data/strum-research-20261006/summary.json
+.data/strum-research-20261006/user.review.json
+Each contains hashes, exact events/added evidence, per-class results, or input pair.
+The original benchmark worker snapshot is preserved as
+transcribe-drums-challenger.frozen.py, SHA-256
+3c48a8915da4e61f28cd4a45c35952e964e1d25ddfe7e2f835232bb0a737871b.
+Final source adds start/end implementation+asset consistency checks without
+changing numerical inference. Existing historical artifacts are not rewritten.
+
+Reproduce a fresh optional run (separate environment recommended)
+uv venv --python 3.11 .data/strum-runtime/.venv
+uv pip install --python .data/strum-runtime/.venv/bin/python -r requirements-drum-challenger.txt
+.venv/bin/python scripts/prepare-drum-challenger.py --output .data/strum-runtime
+.data/strum-runtime/.venv/bin/python scripts/transcribe-drums-challenger.py \
+  --source .data/strum-runtime/source --weights .data/strum-runtime/weights \
+  --audio /path/to/excerpt.wav --output /new/path/to/review.json
+Inputs: mono/stereo local excerpts <=60 seconds; never overwrites output files.
+The review-drum-challenger.py CLI requires frozen baseline-run audio/transcription
+hashes as well as the independent artifact; it refuses unbound/different audio.
+
+Verification
+53 pure contract/review tests passed; six actual ADT CPU integration tests passed
+after dependency additions. The existing isolated drum environment gained 16
+libraries; existing torch 2.8.0 / torchaudio 2.8.0 / numpy 1.26.4 stayed unchanged.
+Final review CLI also parses and hashes the same bounded JSON byte snapshot,
+checks all source files/audio/implementation hashes again before output, and
+rejects simulated concurrent replacement without creating an artifact. The
+final actual user review still contains exactly four suggestions; old results
+are preserved alongside user.review.final.json.
+No company server deployment, app default change, existing score overwrite,
+license click-through acceptance, or remote Git push was performed.

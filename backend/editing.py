@@ -12,16 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from .score import export_score, quantize
 from .tablature import default_tab, assign_positions
-from .rhythm import measure_map, normalize_meters
+from .rhythm import measure_map, normalize_meters, drum_attack_lengths
+from .drum_mapping import DRUM_PITCHES
 
 
 def xml_text(value):
     if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]", value):
         raise ValueError("악보에 사용할 수 없는 제어 문자가 포함되어 있어요.")
     return value
-
-DRUM_PITCHES = {36, 38, 42, 46, 49, 51, 45, 47, 50}
-
 
 class Note(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -35,6 +33,13 @@ class Note(BaseModel):
     articulation: Literal["none", "accent", "staccato", "tenuto"] = "none"
     muted: bool = False
     bend: StrictInt = Field(default=0, ge=0, le=12)
+    hand: Literal["auto", "right", "left"] = "auto"
+
+
+class KeyboardSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["grand", "single"] = "grand"
+    split_pitch: StrictInt = Field(default=60, ge=21, le=108)
 
 
 class TabSettings(BaseModel):
@@ -89,6 +94,7 @@ class ScoreEdit(BaseModel):
     annotations: list[Annotation] = Field(default_factory=list, max_length=600)
     layout: Layout
     tab: TabSettings | None = None
+    keyboard: KeyboardSettings | None = None
     lyrics: list[Lyric] = Field(default_factory=list, max_length=2000)
     _xml_text = field_validator("title")(xml_text)
 
@@ -120,7 +126,8 @@ def create_document(events, inst, title, bpm, duration, audio_offset=0, meters=N
         notes = assign_positions(notes, tab["tuning"])
     return {"version": 1, "instrument": inst, "title": title, "bpm": bpm, "timing_bpm": bpm, "audio_offset": audio_offset,
             "ticks": ticks, "meters": meters, "revision": uuid4().hex, "edited": False, "notes": notes,
-            "tab": tab, "lyrics": [], "annotations": [], "layout": {"preset": "practice" if inst in {"drums", "bass", "guitar"} else "standard",
+            "tab": tab, "keyboard": {"mode": "grand", "split_pitch": 60} if inst in {"piano", "synthesizer"} else None,
+            "lyrics": [], "annotations": [], "layout": {"preset": "practice" if inst in {"drums", "bass", "guitar"} else "standard",
                                           "measures_per_line": 4, "show_numbers": True, "beam_group": "half" if inst == "drums" else "beat"}}
 
 
@@ -134,7 +141,7 @@ def persist(document, folder: Path, *, automatic=False):
                      staging, quantized=sorted(notes), layout=document["layout"],
                      annotations=document["annotations"], edited=document["edited"],
                      tab=document.get("tab"), positions=document["notes"], lyrics=document.get("lyrics", []),
-                     meters=document.get("meters"), ticks=document["ticks"])
+                     meters=document.get("meters"), ticks=document["ticks"], keyboard=document.get("keyboard"))
         data = json.dumps(document, ensure_ascii=False)
         (staging / f"{inst}.score.json").write_text(data)
         if automatic:
@@ -145,8 +152,12 @@ def persist(document, folder: Path, *, automatic=False):
         shutil.rmtree(staging)
 
 
-def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, lyric_cues=None, meters=None):
+def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, lyric_cues=None, meters=None, *, transcription=None):
     document = create_document(events, inst, title, bpm, duration, audio_offset, meters)
+    if inst == "drums":
+        document["notes"] = drum_attack_lengths(document["notes"], document["ticks"], document["meters"])
+    if transcription is not None:
+        document["transcription"] = transcription
     if lyric_cues:
         from .lyrics import timed_lyrics
         document["lyrics"], _ = timed_lyrics(lyric_cues, document)
@@ -157,6 +168,8 @@ def generate_score(events, inst, title, bpm, duration, folder, audio_offset=0, l
 def notation_metadata(document):
     tab = document.get("tab")
     return {"score_meters": normalize_meters(document.get("meters")), "score_tab_mode": tab["mode"] if tab else "staff",
+            "score_audio_offset": document.get("audio_offset", 0),
+            "score_keyboard": document.get("keyboard"), "score_transcription": document.get("transcription"),
             "score_tab_unassigned": sum(n.get("string") is None for n in document["notes"]) if tab else 0}
 
 
@@ -171,6 +184,9 @@ def load_document(folder, inst, duration, *, original=False):
         document.setdefault("lyrics", [])
         document.setdefault("audio_offset", 0)
         document.setdefault("meters", normalize_meters())
+        # Preserve old output until the user explicitly changes notation. A
+        # re-transcription uses the new grand-staff default.
+        document.setdefault("keyboard", {"mode": "single", "split_pitch": 60} if inst in {"piano", "synthesizer"} else None)
         # Legacy files used one-beat beams. Keep their saved layout until the
         # user explicitly selects/saves two-beat grouping; new drums use half.
         document["layout"].setdefault("beam_group", "beat")
@@ -232,6 +248,17 @@ def validate_edit(edit: ScoreEdit, current: dict):
                 data["tab"][key] = current["tab"].get(key, fallback)
     if "lyrics" not in edit.model_fields_set:
         data["lyrics"] = current.get("lyrics", [])
+    if "keyboard" not in edit.model_fields_set:
+        data["keyboard"] = current.get("keyboard")
+    if data["keyboard"] is not None and current["instrument"] not in {"piano", "synthesizer"}:
+        raise ValueError("대보표는 피아노·신디사이저 악보에서 사용할 수 있어요.")
+    if any(n.hand != "auto" for n in edit.notes) and current["instrument"] not in {"piano", "synthesizer"}:
+        raise ValueError("손 배정은 피아노·신디사이저 악보에서 사용할 수 있어요.")
+    # Older clients omit per-note hand assignments when making unrelated edits.
+    old_notes = {n["id"]: n for n in current["notes"]}
+    for note, model in zip(data["notes"], edit.notes):
+        if "hand" not in model.model_fields_set and "hand" in old_notes.get(note["id"], {}):
+            note["hand"] = old_notes[note["id"]]["hand"]
     tab = data["tab"]
     if tab is not None:
         inst = current["instrument"]

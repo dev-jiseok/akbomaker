@@ -167,6 +167,28 @@ def separate_sequential(audio: np.ndarray, extract: Callable, emit: Callable, ev
     return residual
 
 
+def separate_independent(audio: np.ndarray, extract: Callable, emit: Callable, event: threading.Event) -> None:
+    """Experimental: each instrument sees the original, never an earlier residual.
+
+    Outputs can overlap; there is deliberately no additive residual and no
+    mixture-consistency normalization that would change a predicted waveform.
+    Isolated copies keep an extractor or emitter from changing later inputs.
+    """
+    if audio.ndim != 1 or not len(audio) or not np.isfinite(audio).all():
+        raise ValueError("분리할 원본 음원의 샘플 값이 올바르지 않아요.")
+    original = audio.copy()
+    for index, inst in enumerate(INSTRUMENTS):
+        check_cancel(event)
+        request = original.copy()
+        target = extract(request, inst, event, lambda fraction: emit(inst, None, index, fraction))
+        check_cancel(event)
+        if not np.array_equal(request, original):
+            raise ValueError("분리 모델이 입력 음원을 변경했어요.")
+        if not isinstance(target, np.ndarray) or target.shape != original.shape or not np.isfinite(target).all():
+            raise ValueError("분리된 음원의 길이나 샘플 값이 올바르지 않아요.")
+        emit(inst, target.copy(), index, 1.0)
+
+
 ENGINE = SAMSeparator()
 
 

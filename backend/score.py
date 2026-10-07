@@ -40,15 +40,9 @@ def drum_events(path: Path) -> list[tuple]:
     return events
 
 
-def transcribe(path: Path, inst: str) -> list[tuple]:
-    samples, _ = sf.read(path, dtype="float32")
-    if not len(samples) or np.sqrt(np.mean(samples.astype(np.float64) ** 2)) < 1e-5:
-        return []
-    if inst == "drums":
-        return drum_events(path)
-    from basic_pitch.inference import predict
-    _, _, events = predict(str(path), model_or_model_path=transcription_model(), onset_threshold=0.5, frame_threshold=0.3, minimum_note_length=100)
-    return [(float(start), float(end), int(pitch), float(amplitude)) for start, end, pitch, amplitude, *_ in events]
+def transcribe(path: Path, inst: str, profile="instrument", *, engine="standard", details=None, artifacts=None) -> list[tuple]:
+    from .transcription import transcribe_instrument
+    return transcribe_instrument(path, inst, transcription_model, profile, engine=engine, details=details, artifacts=artifacts)
 
 
 @lru_cache(maxsize=1)
@@ -72,7 +66,7 @@ def quantize(events: list[tuple], bpm: int, duration: float) -> list[tuple]:
     end_limit = max(1, round(duration * units))
     notes = []
     for start, end, pitch, amp in events:
-        if not all(math.isfinite(float(x)) for x in (start, end, pitch, amp)) or end <= start:
+        if not all(math.isfinite(float(x)) for x in (start, end, pitch, amp)) or end <= start or start >= duration or end <= 0:
             continue
         a = min(end_limit - 1, max(0, round(start * units)))
         b = min(end_limit, max(a + 1, round(end * units)))
@@ -82,6 +76,7 @@ def quantize(events: list[tuple], bpm: int, duration: float) -> list[tuple]:
 
 DRUM_NOTATION = {
     36: ("F", 4, False), 38: ("C", 5, False), 42: ("G", 5, True),
+    37: ("C", 5, True), 44: ("D", 4, True),
     46: ("G", 5, True), 49: ("A", 5, True), 51: ("F", 5, True),
     45: ("A", 4, False), 47: ("D", 5, False), 50: ("E", 5, False),
 }
@@ -89,7 +84,7 @@ DRUM_NOTATION = {
 
 def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration: float, folder: Path,
                  *, quantized=None, layout=None, annotations=None, edited=False,
-                 tab=None, positions=None, lyrics=None, meters=None, ticks=None):
+                 tab=None, positions=None, lyrics=None, meters=None, ticks=None, keyboard=None):
     notes = quantize(events, bpm, duration) if quantized is None else quantized
     layout = layout or {"preset": "practice" if inst == "drums" else "standard", "measures_per_line": 4}
     annotations = {item["measure"]: item for item in (annotations or [])}
@@ -98,6 +93,12 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
     tab_first = bool(tab and tab.get("order", "staff-first") == "tab-first")
     tab_staff = 1 if tab_mode == "tab" or tab_first else 2
     standard_staff = 2 if tab_mode == "both" and tab_first else 1
+    grand = inst in {"piano", "synthesizer"} and bool(keyboard and keyboard["mode"] == "grand")
+    hands = {(n["start"], n["start"] + n["length"], n["pitch"]): n.get("hand", "auto") for n in (positions or [])}
+
+    def keyboard_staff(note):
+        hand = hands.get(note[:3], "auto")
+        return 2 if hand == "left" or (hand == "auto" and note[2] < keyboard["split_pitch"]) else 1
     tab_positions = {(n["start"], n["start"] + n["length"], n["pitch"]): (n.get("string"), n.get("fret")) for n in (positions or [])}
     note_marks = {(n["start"], n["start"] + n["length"], n["pitch"]): n for n in (positions or [])}
     if len(notes) > 30_000:
@@ -157,9 +158,15 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
             time = child(attrs, "time")
             child(time, "beats", bar["beats"])
             child(time, "beat-type", bar["beat_type"])
-            if tab_mode == "both":
+            if tab_mode == "both" or grand:
                 child(attrs, "staves", 2)
-            if tab_mode != "tab":
+            if grand:
+                child(attrs, "part-symbol", "brace")
+                for staff, sign, line in [(1, "G", 2), (2, "F", 4)]:
+                    clef = child(attrs, "clef", number=str(staff))
+                    child(clef, "sign", sign)
+                    child(clef, "line", line)
+            elif tab_mode != "tab":
                 clef = child(attrs, "clef", **({"number": str(standard_staff)} if tab_mode == "both" else {}))
                 child(clef, "sign", "percussion" if inst == "drums" else "F" if inst == "bass" else "G")
                 if inst != "drums":
@@ -214,15 +221,18 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
             child(time, "beat-type", bar["beat_type"])
         in_bar = [n for n in notes if n[0] < hi and n[1] > lo]
         playable = [n for n in in_bar if tab_positions.get(n[:3], (None, None))[0] is not None]
-        if tab_mode == "both":
+        if grand:
+            voices = [([n for n in in_bar if keyboard_staff(n) == staff], staff, False) for staff in (1, 2)]
+        elif tab_mode == "both":
             voices = [(playable, tab_staff, True), (in_bar, standard_staff, False)] if tab_first else [(in_bar, standard_staff, False), (playable, tab_staff, True)]
         elif tab_mode == "tab":
             voices = [(playable, 1, True)]
         elif inst == "drums":
-            voices = [([n for n in in_bar if n[2] != 36], 1, False), ([n for n in in_bar if n[2] == 36], 1, False)]
+            from .drum_mapping import FOOT_PITCHES
+            voices = [([n for n in in_bar if n[2] not in FOOT_PITCHES], 1, False), ([n for n in in_bar if n[2] in FOOT_PITCHES], 1, False)]
         else:
             voices = [(in_bar, 1, False)]
-        lyric_voice = 1 if tab_mode == "both" else 0
+        lyric_voice = 1 if tab_mode == "both" or grand else 0
         for voice_index, (voice_notes, staff, is_tab) in enumerate(voices):
             if voice_index:
                 child(child(measure, "backup"), "duration", hi - lo)
@@ -239,10 +249,15 @@ def export_score(events: list[tuple], inst: str, title: str, bpm: int, duration:
                     # obscure the 3+3 / 3+3+3 eighth-note subdivisions.
                     if bar["beat_type"] == 8:
                         remaining = min(remaining, beat_ticks - local % beat_ticks)
+                    # Whole-bar rests are centered by engravers. A lyric on
+                    # such a rest would appear halfway through the bar even
+                    # when the cue is at beat one. Anchor it on a timed rest.
+                    if not active and voice_index == lyric_voice and position in lyric_map:
+                        remaining = min(remaining, 4)
                     size = next(value for value in types if value <= remaining)
                     for index, (pitch, event) in enumerate(sorted(active.items()) if active else [(None, None)]):
                         note = write_note(measure, pitch, event, index, inst, position, size, types, pitch_names,
-                                          voice_index, staff=staff if tab_mode != "staff" else None,
+                                          voice_index, staff=staff if tab_mode != "staff" or grand else None,
                                           is_tab=is_tab, tab_position=tab_positions.get(event[:3]) if event else None,
                                           marks=note_marks.get(event[:3], {}) if event and position == event[0] else {},
                                           octave_shift=12 if tab and not is_tab else 0)

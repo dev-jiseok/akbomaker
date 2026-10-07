@@ -1,0 +1,11 @@
+# Isolated ADT_STR inference environment; do NOT install into SAM's environment.
+# Tested with Python 3.11 on macOS arm64. Source / weight revisions: prepare-drum-model.py.
+torch==2.8.0
+torchaudio==2.8.0
+transformers==4.57.6
+huggingface-hub==0.36.2
+safetensors==0.8.0
+numpy==1.26.4
+omegaconf==2.3.0
+pretty-midi==0.2.11
+soundfile==0.13.1

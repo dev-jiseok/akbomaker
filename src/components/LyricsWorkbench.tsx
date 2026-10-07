@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, LoaderCircle, Mic2, Play, Plus, Save, Trash2 } from 'lucide-react';
 import { request } from '../api';
 import { isProcessing, type Health, type Job, type LyricCue, type ScoreDocument } from '../types';
+import { useAudioFocus } from '../audioFocus';
 
 type Props = { job: Job; health: Health | null; editing: boolean; onJob: (job: Job) => void; onError: (message: string) => void; onDirty: (dirty: boolean) => void };
 const key = (cues: LyricCue[]) => JSON.stringify(cues);
@@ -19,11 +20,14 @@ export default function LyricsWorkbench({ job, health, editing, onJob, onError, 
   const [expanded, setExpanded] = useState(!!job.analysis_only || !!server);
   const [draft, setDraft] = useState<{ revision: string; cues: LyricCue[] } | null>(null);
   const audio = useRef<HTMLAudioElement>(null);
+  const claimFocus = useAudioFocus(() => audio.current?.pause());
   const lock = useRef(false);
   const dirty = key(cues) !== baseline;
   const processing = isProcessing(job);
   const storageKey = `akbo-lyric-draft:${job.id}`;
   const audioUrl = source === 'vocal' ? job.stems.find(s => s.id === 'vocal')?.audio_url : job.original_url;
+  useEffect(() => { const player = audio.current; return () => player?.pause(); }, [audioUrl]);
+  useEffect(() => { if (!expanded) audio.current?.pause(); }, [expanded]);
 
   useEffect(() => {
     if ((server?.revision || '') === revision || dirty) return;
@@ -84,13 +88,13 @@ export default function LyricsWorkbench({ job, health, editing, onJob, onError, 
     <div hidden={!expanded}>
     <div className="analysis-controls"><label>인식할 음원<select value={source} disabled={busy || processing} onChange={e => setSource(e.target.value as 'original' | 'vocal')}><option value="original">원본 음원</option><option value="vocal" disabled={!job.stems.find(s => s.id === 'vocal')?.audio_url}>분리된 보컬</option></select></label><label>노래 언어<select value={language} disabled={busy || processing} onChange={e => setLanguage(e.target.value)}><option value="auto">자동 감지</option><option value="ko">한국어</option><option value="en">영어</option><option value="ja">일본어</option><option value="zh">중국어</option></select></label><button className="secondary small" disabled={busy || processing || dirty || !health?.lyrics?.available || job.demo || !audioUrl} onClick={() => void recognize()}>{busy || (processing && job.stage === 'lyrics') ? <LoaderCircle size={15} className="spin" /> : <Mic2 size={15} />} 가사 자동 인식</button></div>
     <p className="editor-help">노래 인식은 오탈자·누락·시간 오차가 있을 수 있는 초안입니다. 반주가 섞인 원본보다 보컬 음원이 유리해요. 무보컬 구간에는 잘못 인식된 가사를 지워주세요. 첫 실행은 모델 다운로드가 필요하며 음원은 외부로 보내지 않습니다.{job.demo ? ' 이 샘플에는 실제 가사가 없어 자동 인식을 하지 않습니다. 수동 입력은 가능해요.' : !health?.lyrics?.available ? ' 서버에 requirements-asr.txt 패키지를 설치해주세요.' : ''}</p>
-    {audioUrl && <audio controls preload="metadata" src={audioUrl} ref={audio} aria-label="가사 위치 확인용 음원" />}
+    {audioUrl && <audio controls preload="metadata" src={audioUrl} ref={audio} onPlay={event => { if (!event.currentTarget.paused) claimFocus(); }} aria-label="가사 위치 확인용 음원" />}
     {draft && <div className="draft-banner"><span>저장 전 가사 편집본이 이 브라우저에 있어요.</span><button className="text-button" disabled={draft.revision !== revision} onClick={() => { setCues(draft.cues); setDraft(null); }}>복원</button>{draft.revision !== revision && <span>서버 버전이 달라 복원할 수 없어요.</span>}<button className="text-button" onClick={() => { setDraft(null); try { localStorage.removeItem(storageKey); } catch { /* optional */ } }}>무시</button></div>}
     {!!server?.warning && <p className="score-warning">{server.warning}</p>}
     {dirty && (server?.revision || '') !== revision && <p className="editor-error">다른 화면에서 초안이 변경됐어요. 현재 편집본은 임시 보관되며 서버의 최신 초안을 덮어쓸 수 없습니다.</p>}
     <fieldset className="cue-fieldset" disabled={busy || processing}>
       <div className="cue-heading"><span>{cues.length}개 · 시간 단위: 초 (원본 기준)</span><button className="text-button" disabled={cues.length >= 2000 || !job.duration} onClick={() => { const start = Math.min(audio.current?.currentTime || 0, Math.max(0, (job.duration || 1) - .2)); setCues([...cues, { id: crypto.randomUUID(), start: Number(start.toFixed(3)), end: Number(Math.min(job.duration || 1, start + .2).toFixed(3)), text: '' }]); setPage(Math.floor(cues.length / 40)); }}><Plus size={14} /> 현재 재생 위치에 가사 추가</button></div>
-      {cues.slice(currentPage * 40, currentPage * 40 + 40).map(cue => <div className="cue-row" key={cue.id}><button type="button" className="icon-button" aria-label={`${cue.text || '가사'} 위치 듣기`} onClick={() => { if (audio.current) { audio.current.currentTime = cue.start; void audio.current.play().catch(() => onError('음원 재생 버튼을 눌러주세요.')); } }}><Play size={14} /></button><label>시작<input type="number" step="0.01" min={0} max={job.duration || 0} value={cue.start} onChange={e => update(cue.id, { start: Number(e.target.value) })} /></label><label>끝<input type="number" step="0.01" min={0} max={job.duration || 0} value={cue.end} onChange={e => update(cue.id, { end: Number(e.target.value) })} /></label><label className="cue-text">가사<input value={cue.text} maxLength={80} placeholder="단어 · 짧은 가사 · 보컬 진입" onChange={e => update(cue.id, { text: e.target.value })} /></label><button type="button" className="icon-button" aria-label="타임라인 가사 삭제" onClick={() => setCues(cues.filter(c => c.id !== cue.id))}><Trash2 size={15} /></button></div>)}
+      {cues.slice(currentPage * 40, currentPage * 40 + 40).map(cue => <div className="cue-row" key={cue.id}><button type="button" className="icon-button" aria-label={`${cue.text || '가사'} 위치 듣기`} onClick={() => { if (audio.current) { claimFocus(); audio.current.currentTime = cue.start; void audio.current.play().catch(error => { if (error?.name !== 'AbortError') onError('음원 재생 버튼을 눌러주세요.'); }); } }}><Play size={14} /></button><label>시작<input type="number" step="0.01" min={0} max={job.duration || 0} value={cue.start} onChange={e => update(cue.id, { start: Number(e.target.value) })} /></label><label>끝<input type="number" step="0.01" min={0} max={job.duration || 0} value={cue.end} onChange={e => update(cue.id, { end: Number(e.target.value) })} /></label><label className="cue-text">가사<input value={cue.text} maxLength={80} placeholder="단어 · 짧은 가사 · 보컬 진입" onChange={e => update(cue.id, { text: e.target.value })} /></label><button type="button" className="icon-button" aria-label="타임라인 가사 삭제" onClick={() => setCues(cues.filter(c => c.id !== cue.id))}><Trash2 size={15} /></button></div>)}
       {!cues.length && <p className="no-notes">자동 인식을 실행하거나, 직접 가사와 보컬 진입 시간을 넣어주세요.</p>}
       {cues.length > 40 && <div className="cue-pagination"><button className="icon-button" disabled={!currentPage} onClick={() => setPage(currentPage - 1)} aria-label="이전 가사 페이지"><ChevronLeft size={16} /></button>{currentPage + 1} / {Math.ceil(cues.length / 40)}<button className="icon-button" disabled={(currentPage + 1) * 40 >= cues.length} onClick={() => setPage(currentPage + 1)} aria-label="다음 가사 페이지"><ChevronRight size={16} /></button></div>}
     </fieldset>

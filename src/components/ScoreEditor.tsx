@@ -10,12 +10,14 @@ import ScorePlayback from './ScorePlayback';
 import BulkScoreEditor from './BulkScoreEditor';
 import ScoreImport from './ScoreImport';
 import MeterEditor from './MeterEditor';
+import KeyboardNotation from './KeyboardNotation';
 import { barAtTick, beatTicks, gridLabel, measureMap, meterSummary } from '../scoreRhythm';
 import { audioTickAtTime, audioTimeAtTick } from '../scorePlayback';
+import { initialScoreMeasureAtAudioTime, useAudioFocus } from '../audioFocus';
 
-type Props = { job: Job; stem: Stem; onSaved: (job: Job) => void; onClose: () => void; onDirty: (dirty: boolean) => void };
+type Props = { job: Job; stem: Stem; onSaved: (job: Job) => void; onClose: () => void; onDirty: (dirty: boolean) => void; initialAudioTime?: number };
 
-export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty }: Props) {
+export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty, initialAudioTime }: Props) {
   const [document, setDocument] = useState<ScoreDocument | null>(null);
   const [baseline, setBaseline] = useState('');
   const [history, setHistory] = useState<ScoreDocument[]>([]);
@@ -37,6 +39,9 @@ export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty }: Pr
   const [audioSession, setAudioSession] = useState(0);
   const [bulkIds, setBulkIds] = useState<string[]>([]);
   const audio = useRef<HTMLAudioElement>(null);
+  const claimFocus = useAudioFocus(() => audio.current?.pause());
+  const initialAudioTimeRef = useRef(initialAudioTime);
+  initialAudioTimeRef.current = initialAudioTime;
   const latestDocument = useRef<ScoreDocument | null>(null);
   latestDocument.current = document;
   const saveLock = useRef(false);
@@ -65,6 +70,7 @@ export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty }: Pr
     request<ScoreDocument>(endpoint).then(doc => {
       if (disposed) return;
       setDocument(doc); setBaseline(contentKey(doc));
+      setMeasure(initialScoreMeasureAtAudioTime(doc, initialAudioTimeRef.current));
       if (doc.notes.length && stem.id !== 'drums') setOctave(Math.max(0, Math.min(9, Math.floor(doc.notes[0].pitch / 12) - 1)));
       try {
         const candidate = JSON.parse(localStorage.getItem(draftKey) || 'null');
@@ -182,6 +188,7 @@ export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty }: Pr
     {error && <p className="editor-error" role="alert">{error}</p>}{notice && <p className="editor-success" role="status"><Check size={15} />{notice}</p>}
     <fieldset className="editor-fields" disabled={saving}><label>악보 제목<input maxLength={180} value={document.title} onChange={e => change({ ...document, title: e.target.value })} /></label><label>출력 스타일<select value={document.layout.preset} onChange={e => change({ ...document, layout: { ...document.layout, preset: e.target.value as ScorePreset, measures_per_line: e.target.value === 'large' ? 2 : 4 } })}>{Object.entries(presetLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label>한 줄 마디<select value={document.layout.measures_per_line} onChange={e => change({ ...document, layout: { ...document.layout, measures_per_line: Number(e.target.value) as 2 | 4 } })}><option value={4}>4마디</option><option value={2}>2마디</option></select></label><label>BPM<input type="number" min={40} max={240} value={document.bpm} onChange={e => change({ ...document, bpm: Math.max(40, Math.min(240, Number(e.target.value))) })} /></label><label className="check-label"><input type="checkbox" checked={document.layout.show_numbers} onChange={e => change({ ...document, layout: { ...document.layout, show_numbers: e.target.checked } })} />마디 번호</label></fieldset>
     <MeterEditor document={document} measure={measure} disabled={saving} onChange={change} onError={setError} onNotice={setNotice} />
+    <KeyboardNotation document={document} selected={selected} disabled={saving} onChange={change} onNoteChange={editSelected} />
     <div className="notation-options"><label>음표 연결선(빔)<select value={document.layout.beam_group || (stem.id === 'drums' ? 'half' : 'beat')} disabled={saving || bar.beat_type === 8} onChange={e => change({ ...document, layout: { ...document.layout, beam_group: e.target.value as 'beat' | 'half' } })}><option value="half">2박씩 · 8분음표 4개 연결</option><option value="beat">1박씩 · 8분음표 2개 연결</option></select></label><span>{bar.beat_type === 8 ? '복합박자는 8분음표 3개씩 연결하고, 두 번째 선은 8분음표 단위로 나눠요.' : '16분음표의 두 번째 선은 1박씩 나눠 읽기 쉽게 표시해요.'} 소리·길이는 유지합니다.</span></div>
     <p className="editor-help">빈칸을 누르면 음표가 들어갑니다. 음표나 이어지는 칸을 누르면 선택하고, 음표를 더블클릭하면 삭제합니다. 빈 구간은 악보에서 쉼표가 됩니다. <span>{bar.beats}/{bar.beat_type} · 한 칸 = 16분음표</span></p>
     <div className="grid-legend"><span><b>● / TAB 숫자</b> 음표 시작</span><span><b>—</b> 앞 음표가 이어짐 · 쉼표 아님</span><span>— 넣기: 음표 선택 → 길이 늘리기</span></div>
@@ -231,7 +238,7 @@ export default function ScoreEditor({ job, stem, onSaved, onClose, onDirty }: Pr
     <LyricEditor document={document} measure={measure} disabled={saving} onChange={change} onError={setError} onNotice={setNotice} />
     <div className="lyric-share"><span>전체 가사 {document.lyrics?.length || 0}개 · 저장하면 악보와 MusicXML에 반영됩니다.</span><button className="text-button" disabled={dirty || saving || !document.lyrics?.length} onClick={() => void copyLyrics()}>저장한 가사를 다른 악보에 복사</button></div>
     <ScorePlayback document={document} measure={measure} stopKey={audioSession} onTick={tick => { if (tick !== null) audio.current?.pause(); setPlayTick(tick); }} onError={setError} />
-    {(stem.audio_url || job.original_url) && <div className="editor-audio"><span>{stem.audio_url ? '분리 음원과 비교' : '원본 음원과 비교'}{audioTick !== null ? ` · ${barAtTick(bars, audioTick)?.number}마디` : ''}</span><audio controls preload="metadata" ref={audio} onPlay={() => setAudioSession(value => value + 1)} src={stem.audio_url || job.original_url || undefined} /><button className="text-button" onClick={() => { if (audio.current) { audio.current.currentTime = audioTimeAtTick(document, barStart); void audio.current.play().catch(() => setError('음원 재생 버튼을 눌러주세요.')); } }}>현재 마디부터 듣기</button><small>최초 채보 BPM·시작 오프셋으로 마디를 표시합니다. 저장한 변박을 반영합니다. 템포가 변하는 음원은 추가 위치 보정이 필요해요.</small></div>}
+    {(stem.audio_url || job.original_url) && <div className="editor-audio"><span>{stem.audio_url ? '분리 음원과 비교' : '원본 음원과 비교'}{audioTick !== null ? ` · ${barAtTick(bars, audioTick)?.number}마디` : ''}</span><audio controls preload="metadata" ref={audio} onPlay={event => { if (!event.currentTarget.paused) { claimFocus(); setAudioSession(value => value + 1); } }} src={stem.audio_url || job.original_url || undefined} /><button className="text-button" onClick={() => { if (audio.current) { claimFocus(); audio.current.currentTime = audioTimeAtTick(document, barStart); void audio.current.play().catch(error => { if (error?.name !== 'AbortError') setError('음원 재생 버튼을 눌러주세요.'); }); } }}>현재 마디부터 듣기</button><small>최초 채보 BPM·시작 오프셋으로 마디를 표시합니다. 저장한 변박을 반영합니다. 템포가 변하는 음원은 추가 위치 보정이 필요해요.</small></div>}
     <div className="editor-preview-heading"><span>악보 미리보기</span><small>{previewing ? '변경사항을 그리는 중…' : '마디를 누르면 해당 마디 편집으로 이동해요'}</small></div>
     <div className={`score-paper editor-preview preset-${document.layout.preset}`} aria-busy={previewing}><div className="paper-heading"><span>AKBO MAKER · {presetLabels[document.layout.preset]}</span><h3>{document.title}</h3><p>{stem.label} · {meterSummary(document.meters)} · ♩ {document.bpm} · {dirty ? '저장 전 미리보기' : '저장된 악보'}</p></div>{preview && <ScoreViewer stem={stem} xml={preview} layout={document.layout} scale={document.layout.preset === 'large' ? 1.3 : 1.1} spacious={document.layout.preset !== 'standard'} measureNumbers={document.layout.show_numbers} onMeasureSelect={nextMeasure} activeMeasure={(playTick ?? audioTick) === null ? null : barAtTick(bars, (playTick ?? audioTick)!)?.number || null} />}</div>
     <p className="editor-footnote">BPM 수정은 악보·MIDI 템포만 바꾸며 음원과 가사 칸 위치는 유지합니다. 자동 운지는 제안이며 실제 연주법과 다를 수 있어요. TAB만 출력할 때 미배정 음이 없는지 확인해주세요. 출력은 저장 후 편집기를 닫아주세요.</p>

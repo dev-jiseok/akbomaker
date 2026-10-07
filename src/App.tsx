@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronRight, CircleHelp, Clock3, FileAudio2, FileMusic, FolderHeart, Headphones, LayoutDashboard, Link2, LoaderCircle, Menu, Music2, Plus, Radio, ShieldCheck, Sparkles, UploadCloud, X, Youtube, AlertCircle } from 'lucide-react';
 import { recentProjects, rememberProject, request, upload, type RecentProject } from './api';
-import { formatTime, instruments, isProcessing, isYoutubeUrl, validateFile, type Health, type Job } from './types';
+import { formatTime, instruments, isProcessing, isYoutubeUrl, validateFile, type Health, type Job, type SeparationStrategy } from './types';
 import { StudioArtwork } from './components/Artwork';
 import { instrumentIcons } from './components/Mixer';
 import Workspace from './components/Workspace';
 import ScoreImport from './components/ScoreImport';
+import SeparationOptions from './components/SeparationOptions';
 
 type View = 'home' | 'projects' | 'guide';
 const names = ['보컬', '베이스', '드럼', '신디사이저', '기타', '피아노'];
@@ -20,6 +21,7 @@ export default function App() {
   const [preview, setPreview] = useState('');
   const [url, setUrl] = useState('');
   const [analysisOnly, setAnalysisOnly] = useState(false);
+  const [separationStrategy, setSeparationStrategy] = useState<SeparationStrategy>('sequential');
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -30,6 +32,10 @@ export default function App() {
   const [projects, setProjects] = useState<RecentProject[]>(recentProjects);
   const [pollError, setPollError] = useState(false);
   const [scoreDirty, setScoreDirty] = useState(false);
+  const activeJobRef = useRef(job);
+  const scoreDirtyRef = useRef(scoreDirty);
+  activeJobRef.current = job;
+  scoreDirtyRef.current = scoreDirty;
   const fileInput = useRef<HTMLInputElement>(null);
   const abortUpload = useRef<AbortController | null>(null);
   const uploadBusy = useRef(false);
@@ -55,6 +61,13 @@ export default function App() {
       controller?.abort();
       const expected = location.hash;
       const id = expected.match(/^#project=([a-f0-9]{32})$/)?.[1];
+      // Hash/history navigation must obey the same unsaved-work guard as menus.
+      const active = activeJobRef.current;
+      if (active && id !== active.id && scoreDirtyRef.current
+          && !window.confirm('저장하지 않은 악보·가사·검수 변경사항이 있어요. 이동하면 입력 중인 내용이 사라질 수 있습니다. 계속할까요?')) {
+        history.replaceState(null, '', `#project=${active.id}`);
+        return;
+      }
       if (!id) { setJob(null); return; }
       controller = new AbortController();
       request<Job>(`/api/jobs/${id}`, { signal: controller.signal }).then(next => {
@@ -112,7 +125,7 @@ export default function App() {
     history.replaceState(null, '', location.pathname);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
-  function canLeaveScore() { return !scoreDirty || window.confirm('저장하지 않은 악보·가사 변경사항이 있어요. 이 화면을 나갈까요? 임시 편집본은 이 브라우저에 보관됩니다.'); }
+  function canLeaveScore() { return !scoreDirty || window.confirm('저장하지 않은 악보·가사·검수 변경사항이 있어요. 먼저 저장하는 것을 권장해요. 입력 중인 내용이 사라질 수 있는데 이 화면을 나갈까요?'); }
   function chooseFile(value: File | undefined) {
     if (!value) return;
     const error = validateFile(value, health?.limits.max_upload_mb || 200);
@@ -133,6 +146,7 @@ export default function App() {
     try {
       const data = new FormData();
       data.append('analysis_only', String(analysisOnly));
+      data.append('separation_strategy', analysisOnly ? 'sequential' : separationStrategy);
       if (source === 'file') data.append('file', file!);
       else data.append('url', url.trim());
       const next = await upload(data, setUploadProgress, controller.signal);
@@ -193,7 +207,8 @@ export default function App() {
             {formError && <div className="form-error" role="alert"><AlertCircle size={15} />{formError}</div>}
             <div className="instrument-label"><span>여섯 가지 소리를 차례로 분리해요</span><span>SAM Audio</span></div><div className="instrument-chips">{instruments.map((inst, i) => { const Icon = instrumentIcons[inst]; return <span key={inst} className={`instrument-chip tone-${inst}`}><Icon size={14} />{names[i]}</span>; })}</div>
             {uploadProgress !== null && <div className="upload-progress" aria-live="polite"><div><span>{uploadProgress === 100 ? '서버에서 업로드를 확인하고 있어요' : `음악을 가져오는 중 · ${uploadProgress}%`}</span><button className="text-button" onClick={() => abortUpload.current?.abort()}>취소</button></div><div className="progress-track"><div style={{ width: `${uploadProgress}%` }} /></div></div>}
-            <label className="analysis-mode check-label"><input type="checkbox" checked={analysisOnly} disabled={loading} onChange={e => setAnalysisOnly(e.target.checked)} /><span>분리 없이 원본만 분석 <small>GPU 없이 BPM·가사 인식·직접 악보 입력</small></span></label>
+            <label className="analysis-mode check-label"><input type="checkbox" checked={analysisOnly} disabled={loading} onChange={e => setAnalysisOnly(e.target.checked)} /><span>분리 없이 원본만 분석 <small>GPU 없이 BPM·가사·드럼 채보·직접 입력</small></span></label>
+            {!analysisOnly && <SeparationOptions value={separationStrategy} disabled={loading} onChange={setSeparationStrategy} />}
             <button className="primary start-button" disabled={loading || !health || (!engineReady && !analysisOnly) || (source === 'file' ? !file : !url.trim())} onClick={() => void start()}>{loading && uploadProgress !== null ? <LoaderCircle className="spin" size={18} /> : <AudioLines size={18} />}{analysisOnly ? '원본 가져와서 분석하기' : '악기 분리 시작'}<ArrowRight size={17} /></button>
             {!engineReady && !checking && <div className="form-error" role="alert"><AlertCircle size={15} /><div><strong>{health ? '악기 분리를 시작할 수 없어요.' : '음악 처리 서버에 연결할 수 없어요.'}</strong>{health?.engine.issues.map(issue => <p key={issue}>{issue}</p>)}<p>{health ? '서버 준비 상태를 확인한 뒤 다시 시도해주세요.' : '서버 시작 로그에서 모델 준비 상태와 오류를 확인해주세요.'}</p><button className="text-button" onClick={() => setEngineModal(true)}>연결 상태 확인 <ArrowUpRight size={12} /></button></div></div>}
             <div className="upload-footnote"><ShieldCheck size={13} /><span>직접 제작했거나 사용할 권한이 있는 음악을 가져와주세요.</span></div>
