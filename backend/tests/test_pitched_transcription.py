@@ -2,7 +2,9 @@
 import copy
 import io
 import json
+import sys
 import threading
+from types import ModuleType
 import zipfile
 
 import numpy as np
@@ -162,8 +164,6 @@ def test_standard_engine_descriptions_and_monophonic_routing_stay_unchanged(tmp_
 
 
 def test_adaptive_runtime_uses_one_model_output_isolated_baseline_and_compact_summary(tmp_path, monkeypatch):
-    import basic_pitch.inference as inference
-    import basic_pitch.note_creation as notes
     import backend.pitched_decoder as decoder
     path = tmp_path / "guitar.wav"
     sf.write(path, np.full(22050, .02), 22050)
@@ -180,8 +180,21 @@ def test_adaptive_runtime_uses_one_model_output_isolated_baseline_and_compact_su
         assert raw is output and np.all(raw["note"] == .5)
         assert kwargs["min_pitch"] == 28 and kwargs["max_pitch"] == 103
         return [(0, .5, 64, .7), (0, .5, 76, .05)], {"evidence": [{"pitch": 76, "onset_activation": .6}] * 500}
-    monkeypatch.setattr(inference, "run_inference", infer)
-    monkeypatch.setattr(notes, "model_output_to_notes", baseline)
+    # This is an orchestration contract test, not real Basic Pitch inference.
+    # Install the fake import boundary even when the optional package is absent
+    # (as in CPU-only CI), and restore any real modules after the test.
+    package = ModuleType("basic_pitch")
+    package.__path__ = []
+    inference = ModuleType("basic_pitch.inference")
+    inference.run_inference = infer
+    notes = ModuleType("basic_pitch.note_creation")
+    notes.model_output_to_notes = baseline
+    constants = ModuleType("basic_pitch.constants")
+    constants.AUDIO_SAMPLE_RATE, constants.FFT_HOP = 22050, 256
+    monkeypatch.setitem(sys.modules, "basic_pitch", package)
+    for name, module in (("inference", inference), ("note_creation", notes), ("constants", constants)):
+        setattr(package, name, module)
+        monkeypatch.setitem(sys.modules, f"basic_pitch.{name}", module)
     monkeypatch.setattr(decoder, "decode_pitched", adaptive)
     details = {}
     events = transcription.transcribe_instrument(path, "guitar", lambda: model, engine="adaptive", details=details, artifacts=tmp_path)
